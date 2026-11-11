@@ -162,8 +162,8 @@ class Canaries:
                     taken.add(segment)
                     segments[kind] = segment
                     break
-        links = tuple(_file_path(rng, segments[KIND_LINK]) for _ in range(6))
-        comments = tuple(_file_path(rng, segments[KIND_COMMENT]) for _ in range(3))
+        links = _distinct_paths(rng, segments[KIND_LINK], 6)
+        comments = _distinct_paths(rng, segments[KIND_COMMENT], 3)
         robots_only = f"/{segments[KIND_ROBOTS]}/"
         instruction = f"/{segments[KIND_INSTRUCTION]}/{rng.choice(_AGENT_WORDS)}"
         return CanarySet(
@@ -223,6 +223,15 @@ def _file_path(rng, segment: str) -> str:
     if rng.random() < 0.4:
         name = f"{name}-{2019 + rng.randrange(7)}"
     return f"/{segment}/{name}{ending}"
+
+
+def _distinct_paths(rng, segment: str, count: int) -> tuple[str, ...]:
+    paths: list[str] = []
+    while len(paths) < count:
+        path = _file_path(rng, segment)
+        if path not in paths:
+            paths.append(path)
+    return tuple(paths)
 
 
 def _constant_time_equal(left: str, right: str) -> bool:

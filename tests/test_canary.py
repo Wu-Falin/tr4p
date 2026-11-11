@@ -126,3 +126,10 @@ def test_persona_replays_learned_upstream_pages():
     assert persona.server_header == "gunicorn"
     assert persona.error_page(404) == ("application/json", b'{"error":"nope"}')
     assert b"nginx" in persona.error_page(502)[1] or b"Bad Gateway" in persona.error_page(502)[1]
+
+
+def test_advertised_paths_are_distinct():
+    for byte in range(1, 80):
+        current = make(make_seed(byte))[0].current()
+        assert len(set(current.link_paths)) == len(current.link_paths) == 6
+        assert len(set(current.comment_paths)) == len(current.comment_paths) == 3
