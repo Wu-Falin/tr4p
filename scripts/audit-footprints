@@ -88,8 +88,13 @@ BANNED_PHRASES = {
     }),
 }
 
-# The ignore file names agent configuration on purpose, to keep it out.
-NAME_CHECK_EXEMPT = frozenset({".gitignore"})
+# Findings that sit in already-pushed history and can only be removed by
+# rewriting it. They are listed on every run and do not fail the audit.
+# TEMPORARY: the history cleanup pass before the repository goes public must
+# leave this empty.
+PENDING_HISTORY_CLEANUP = frozenset({
+    ("5f44e3c172", ".gitignore"),   # ignore entries that named agent config
+})
 
 GENERIC_MACHINE_NAMES = frozenset({
     "root", "user", "admin", "runner", "ubuntu", "debian", "localhost", "docker",
@@ -146,22 +151,26 @@ def git(root: Path, *args: str) -> str:
 class Audit:
     def __init__(self, machine_names: set[str]) -> None:
         self.findings: list[str] = []
+        self.pending: list[str] = []
         self._seen: set[str] = set()
         self._machine = machine_names
 
-    def report(self, category: str, where: str, excerpt: str) -> None:
+    def report(self, category: str, where: str, excerpt: str, pending: bool = False) -> None:
         line = f"[{category}] {where}: {excerpt.strip()[:160]}"
         if line not in self._seen:
             self._seen.add(line)
-            self.findings.append(line)
+            (self.pending if pending else self.findings).append(line)
 
-    def text(self, where: str, line: str, check_names: bool = True) -> None:
+    def text(self, where: str, line: str, pending: bool = False) -> None:
         """Check one line of text."""
+        report = self.report if not pending else (
+            lambda category, place, excerpt: self.report(category, place, excerpt, True)
+        )
         if "@" in line:
             for match in EMAIL.finditer(line):
                 address = match.group(0).lower()
                 if address != AUTHOR_EMAIL and not address.endswith(ALLOWED_EMAIL_SUFFIXES):
-                    self.report("email", where, match.group(0))
+                    report("email", where, match.group(0))
         if "." in line:
             for match in IPV4.finditer(line):
                 if any(int(part) > 255 for part in match.groups()):
@@ -169,7 +178,7 @@ class Audit:
                 if VERSION_CONTEXT.search(line[:match.start()]):
                     continue
                 if not _allowed_address(match.group(0)):
-                    self.report("ip-address", where, match.group(0))
+                    report("ip-address", where, match.group(0))
         if ":" in line:
             for match in IPV6.finditer(line):
                 try:
@@ -177,26 +186,24 @@ class Audit:
                 except ValueError:
                     continue
                 if not any(address in net for net in ALLOWED_NETWORKS if net.version == 6):
-                    self.report("ip-address", where, match.group(0))
+                    report("ip-address", where, match.group(0))
             for match in MAC.finditer(line):
-                self.report("mac-address", where, match.group(0))
+                report("mac-address", where, match.group(0))
         if "/" in line or "\\" in line:
             for match in HOME_PATH.finditer(line):
-                self.report("home-path", where, match.group(0))
-        if not check_names:
-            return
+                report("home-path", where, match.group(0))
         words = [word.lower() for word in WORD.findall(line)]
         for word in words:
             if len(word) >= 3 and is_banned_word(word):
-                self.report("tool-name", where, line)
+                report("tool-name", where, line)
                 break
             if word in self._machine:
-                self.report("machine-name", where, line)
+                report("machine-name", where, line)
                 break
         for size, hashes in BANNED_PHRASES.items():
             for start in range(len(words) - size + 1):
                 if sha(" ".join(words[start:start + size])) in hashes:
-                    self.report("attribution-phrase", where, line)
+                    report("attribution-phrase", where, line)
                     break
 
 
@@ -224,8 +231,7 @@ def scan_tree(root: Path, audit: Audit) -> int:
     files = [name for name in git(root, "ls-files", "-co", "--exclude-standard", "-z").split("\0") if name]
     for name in files:
         path = root / name
-        check_names = name not in NAME_CHECK_EXEMPT
-        audit.text(f"tree:{name} (file name)", name, check_names)
+        audit.text(f"tree:{name} (file name)", name)
         if not path.is_file():
             continue
         data = path.read_bytes()
@@ -237,7 +243,7 @@ def scan_tree(root: Path, audit: Audit) -> int:
         if b"\0" in data[:8192]:
             continue
         for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), start=1):
-            audit.text(f"tree:{name}:{number}", line, check_names)
+            audit.text(f"tree:{name}:{number}", line)
     return len(files)
 
 
@@ -274,9 +280,10 @@ def scan_history(root: Path, audit: Audit) -> int:
             name = line[6:] if line.startswith("+++ b/") else ""
             if name:
                 audit.text(f"history:{commit}:{name} (file name)", name,
-                           name not in NAME_CHECK_EXEMPT)
+                           (commit, name) in PENDING_HISTORY_CLEANUP)
         elif line.startswith("+") and name:
-            audit.text(f"history:{commit}:{name}", line[1:], name not in NAME_CHECK_EXEMPT)
+            audit.text(f"history:{commit}:{name}", line[1:],
+                       (commit, name) in PENDING_HISTORY_CLEANUP)
     return commits
 
 
@@ -299,7 +306,11 @@ def main() -> int:
 
     for finding in audit.findings:
         print(finding)
+    for finding in audit.pending:
+        print(f"pending history cleanup: {finding}")
     scope = f"{files} files" + ("" if args.no_history else f", {commits} commits")
+    if audit.pending:
+        scope += f", {len(audit.pending)} known finding(s) awaiting history cleanup"
     if audit.findings:
         print(f"\n{len(audit.findings)} finding(s) in {scope}.", file=sys.stderr)
         return 1

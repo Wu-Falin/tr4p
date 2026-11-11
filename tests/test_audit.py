@@ -115,12 +115,12 @@ def test_branch_and_file_names_are_checked(repo):
     assert "(file name)" in out
 
 
-def test_ignore_file_may_name_agent_config(repo):
+def test_ignore_file_gets_no_special_treatment(repo):
     name = "edualc"[::-1]
     (repo / ".gitignore").write_text(f".{name}/\n{name.upper()}.md\n", encoding="utf-8")
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "Ignore agent config")
-    assert audit(repo)[0] == 0
+    code, out = audit(repo, "--no-history")
+    assert code == 1
+    assert "[tool-name] tree:.gitignore:1" in out
 
 
 def test_image_metadata_is_found(repo):

@@ -33,9 +33,3 @@ tr4p-home/
 *.db-shm
 secret.key
 config.local.json
-
-# Agent and assistant configuration
-.claude/
-CLAUDE.md
-AGENTS.md
-.agents/
