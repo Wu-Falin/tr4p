@@ -81,7 +81,7 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 
 
 def _asset(name: str) -> bytes:
-    return resources.files("tr4p.dashboard").joinpath("static", name).read_bytes()
+    return (resources.files("tr4p.dashboard") / "static" / name).read_bytes()
 
 
 class Dashboard:
