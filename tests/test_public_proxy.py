@@ -259,6 +259,20 @@ class ProxyEdges(ListenerCase):
         for word in ("aiohttp", "python", "tr4p"):
             self.assertNotIn(word, text)
 
+    async def test_only_origin_form_targets_are_proxied(self):
+        # Absolute-form targets must never be appended to the upstream
+        # address: that would let a client pick the host the proxy talks to.
+        for target in (b"http://other.example/", b"s.other.example://x", b"*"):
+            before = len(self.hits)
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.app.port)
+            writer.write(b"GET " + target + b" HTTP/1.1\r\nHost: shop.example\r\n"
+                         b"Connection: close\r\n\r\n")
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.read(), 5)
+            writer.close()
+            self.assertIn(b" 400 ", raw.split(b"\r\n")[0], target)
+            self.assertEqual(len(self.hits), before, target)
+
     async def test_upstream_down_gives_bad_gateway(self):
         await self.upstream_runner.cleanup()
         self.upstream_runner = None

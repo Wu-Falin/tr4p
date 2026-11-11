@@ -109,6 +109,12 @@ class PublicApp:
         client_ip = self._client_ip(headers, peer) if trusted else peer
         secure = trusted and headers.get("x-forwarded-proto", "").lower() == "https"
 
+        # Only origin-form targets ("/path") are served. An absolute-form
+        # target could otherwise be glued onto the upstream address and
+        # steer the proxy to a different host.
+        if not request.raw_path.startswith("/"):
+            return self._error(request, 400)
+
         length = request.content_length
         limit = self._config.public.max_body_bytes
         if length is not None and limit and length > limit:
@@ -161,7 +167,7 @@ class PublicApp:
         try:
             return await request.content.readexactly(length)
         except asyncio.IncompleteReadError as exc:
-            return exc.partial
+            raise ConnectionResetError("client closed during request body") from exc
 
     # --------------------------------------------------------------- standalone
 
