@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>First-time setup</title>
+<link rel="stylesheet" href="/static/auth.css">
+</head>
+<body data-mode="setup">
+<main class="box">
+  <h1>Create a password</h1>
+  <p class="hint">There is no default password. Enter the setup code printed on the
+  server console, then choose a password of at least 10 characters.</p>
+  <form id="form" novalidate>
+    <label for="code">Setup code</label>
+    <input id="code" type="text" autocomplete="off" autocapitalize="characters"
+           spellcheck="false" placeholder="XXXX-XXXX-XXXX" required autofocus>
+    <label for="password">New password</label>
+    <input id="password" type="password" autocomplete="new-password" required>
+    <label for="confirm">Repeat password</label>
+    <input id="confirm" type="password" autocomplete="new-password" required>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button type="submit">Save and sign in</button>
+  </form>
+</main>
+<script src="/static/auth.js"></script>
+</body>
+</html>

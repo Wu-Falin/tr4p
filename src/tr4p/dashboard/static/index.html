@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>TR4P dashboard</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">TR4P</div>
+  <div class="instance" id="instance"></div>
+  <div class="status" id="status" data-state="unknown" role="status" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span><span id="status-text">Connecting</span>
+  </div>
+  <div class="uptime">Uptime <strong id="uptime">-</strong></div>
+  <button id="logout" class="ghost" type="button">Sign out</button>
+</header>
+
+<main>
+  <section class="cards" aria-label="Summary">
+    <div class="card"><div class="label">Requests seen</div><div class="value" id="c-requests">-</div></div>
+    <div class="card"><div class="label">Canary hits</div><div class="value" id="c-canary">-</div></div>
+    <div class="card"><div class="label">Alerts</div><div class="value" id="c-alerts">-</div></div>
+    <div class="card">
+      <div class="label">Flagged sessions</div>
+      <div class="value" id="c-flagged">-</div>
+      <div class="split">
+        <span class="tier tier-low">low <b id="c-low">0</b></span>
+        <span class="tier tier-medium">medium <b id="c-medium">0</b></span>
+        <span class="tier tier-high">high <b id="c-high">0</b></span>
+      </div>
+    </div>
+    <div class="card"><div class="label">Tracked sessions</div><div class="value" id="c-tracked">-</div></div>
+    <div class="card"><div class="label">Mode</div><div class="value small" id="c-mode">-</div>
+      <div class="split" id="c-rotation"></div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Flagged sessions</h2>
+      <span class="note">One signal only logs. Two independent kinds of evidence are needed for medium or high.</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Tier</th><th>Score</th><th>Address</th><th>Signals</th><th>Client</th><th>Last seen</th><th></th></tr>
+        </thead>
+        <tbody id="sessions"></tbody>
+      </table>
+      <p class="empty" id="sessions-empty">No flagged sessions.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Live events</h2>
+      <label class="check"><input type="checkbox" id="alerts-only"> Alerts only</label>
+    </div>
+    <ol class="feed" id="feed" aria-live="off"></ol>
+    <p class="empty" id="feed-empty">Nothing yet. Events appear here as they happen.</p>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

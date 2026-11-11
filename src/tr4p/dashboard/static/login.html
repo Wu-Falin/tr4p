@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in</title>
+<link rel="stylesheet" href="/static/auth.css">
+</head>
+<body data-mode="login">
+<main class="box">
+  <h1>Sign in</h1>
+  <form id="form" novalidate>
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" required autofocus>
+    <p id="error" class="error" role="alert" hidden></p>
+    <button type="submit">Sign in</button>
+  </form>
+</main>
+<script src="/static/auth.js"></script>
+</body>
+</html>
