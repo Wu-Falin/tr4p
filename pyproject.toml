@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tr4p"
+version = "0.1.0"
+description = "Self-hosted deception layer that detects automated and AI-driven attackers and makes attacking a protected site slow and costly."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Wu-Falin" }]
+keywords = ["security", "deception", "tarpit", "decoy", "defense"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+]
+dependencies = ["aiohttp>=3.9,<4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+tr4p = "tr4p.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tr4p = ["dashboard/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
