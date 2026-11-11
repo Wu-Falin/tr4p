@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Scan the repository for personal or machine footprints.
+
+Checks the working tree and the complete git history for:
+
+  * commits whose author or committer is not the project author
+  * e-mail addresses other than the author's
+  * IP addresses outside loopback and the documentation ranges
+  * MAC addresses
+  * home directory paths, and this machine's host and user name
+  * names of code-assistant tools and vendors, and attribution phrases
+  * images that still carry metadata
+
+Tool names are matched by SHA-256 so that this script does not itself contain
+the words it looks for.
+
+Run from anywhere inside the repository:
+
+    python scripts/audit-footprints            # tree and history
+    python scripts/audit-footprints --no-history
+
+Exit status is 0 when clean and 1 when anything was found.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import ipaddress
+import re
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+AUTHOR_NAME = "Wu-Falin"
+AUTHOR_EMAIL = "valynndo@gmail.com"
+
+# Reserved for documentation and testing; never somebody's real address.
+ALLOWED_EMAIL_SUFFIXES = (
+    "@example.com", "@example.org", "@example.net",
+    ".example", ".test", ".invalid", ".localhost",
+)
+ALLOWED_NETWORKS = tuple(ipaddress.ip_network(net) for net in (
+    "127.0.0.0/8",          # loopback
+    "0.0.0.0/32",           # "any address"
+    "255.255.255.255/32",   # broadcast
+    "192.0.2.0/24",         # documentation (TEST-NET-1)
+    "198.51.100.0/24",      # documentation (TEST-NET-2)
+    "203.0.113.0/24",       # documentation (TEST-NET-3)
+    "169.254.169.254/32",   # cloud metadata address, part of an attack signature
+    "::1/128", "::/128",    # IPv6 loopback and "any address"
+    "2001:db8::/32",        # IPv6 documentation
+))
+
+# SHA-256 of banned words (lower case). Words of six letters or more are
+# also found inside longer words.
+BANNED_WORDS = frozenset({
+    "c857d09db23e6822e3600bc06ad8d58f92ed62bc8efd81c753f77048662cb97d",
+    "c70eca6b0f88f44d81a41311647e50fda1ac454ec04ffd442b0eb4743a993131",
+    "60965168ce762e949600281ba6d01fee136e5b6e8257b1f216f9025ed324474c",
+    "7d3194f79e645c42e4396dda38be04766810ec6a00d00aced3ffc2a0a1f1a9ef",
+    "3ea125d0bff386e6754b3782b300016fc79a9cf8f8669c0a5c3db64467ddb681",
+    "57de4cf40144bdf7d00010f2f5557a7d642c2b9705309bfade167dd313e2ca93",
+    "5d72436256ada53828b51895a94bb8489e9f1ac4fe937a8024ef1594e7045ff6",
+    "0ac0192d441f96da3a4a3174330c3a74e034a3a4704fded0e87515d1a97c19dc",
+    "97f128115e33c7693db6156c493d1fcbe0ebf4a870b6b49cd4b6b865233f7725",
+    "053ea4804ef1bb33d4a3d6fb024a614b6d257cebc2bc7cd915da9c9522f37ffc",
+    "88935407039ab8e18cf2f7bd1611c314e5187d99403ccb7c2d44dcded189c862",
+    "e408ee3d83092ec7f7418c8430df349d62d43b57195888fb7609daf4ff22b368",
+    "419833c75dd65fb3ac77e05c276bb477aa5586e754d2f90d583cfbf97642793e",
+    "6a0adb4b6acf50826838f3853ddd0930d2048e7d8cea775d11fd7ee3c08362e3",
+})
+SUBSTRING_LENGTHS = (6, 7, 9)
+
+# SHA-256 of banned phrases: consecutive words joined by single spaces.
+BANNED_PHRASES = {
+    3: frozenset({
+        "7c38d5864015fc722b62d2f5b8cf69be50bcea73de4cfb745c8b9780e9e8d9f5",
+        "7086a5e04b87f69a2af70092fc9f8205243f75d4bb1afe5f26b102f73b9eff09",
+    }),
+    2: frozenset({
+        "2e8aae79d9566c6391cbf216d0b40760bde9bd51a6c5b0b970a248f679cd718f",
+        "0677069fdf937bd1e36cb0f16701b00ee98436d5638157bae9d36f602ad62aba",
+        "cdcbb68a3444fdd629ab0af770af3fc99e4d5dde43b576d5f855691e155283ec",
+        "d47964e026643905b878d899a2ecfafc1ac1eca0d65bcebfa445d30bf14f2564",
+    }),
+}
+
+# The ignore file names agent configuration on purpose, to keep it out.
+NAME_CHECK_EXEMPT = frozenset({".gitignore"})
+
+GENERIC_MACHINE_NAMES = frozenset({
+    "root", "user", "admin", "runner", "ubuntu", "debian", "localhost", "docker",
+    "build", "home", "test", "tests", "main", "node", "host", "server", "local",
+    "default", "public", "private", "dev", "www", "web", "app", "git", "nobody",
+    "runneradmin", "vsts", "kali", "codespace",
+})
+
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+IPV4 = re.compile(r"(?<![\w.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\w]|\.\d)")
+IPV6 = re.compile(r"(?<![\w:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:.])")
+MAC = re.compile(r"(?<![0-9A-Fa-f:-])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:-])")
+# "[t]" keeps this pattern from matching its own source line.
+HOME_PATH = re.compile(
+    r"(?:/home/|/Users/|[A-Za-z]:\\\\?Users\\\\?)[A-Za-z0-9._-]+|(?<![\w.])/roo[t]/"
+)
+VERSION_CONTEXT = re.compile(r"(?:[A-Za-z]/|[vV]|version\s|==|>=|<=|~=)$")
+WORD = re.compile(r"[A-Za-z0-9]+")
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff", ".ico")
+IMAGE_METADATA_MARKS = (b"Exif", b"tEXt", b"iTXt", b"zTXt", b"<x:xmpmeta", b"photoshop", b"GPS")
+
+_word_cache: dict[str, bool] = {}
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def is_banned_word(token: str) -> bool:
+    cached = _word_cache.get(token)
+    if cached is not None:
+        return cached
+    found = sha(token) in BANNED_WORDS
+    if not found:
+        for length in SUBSTRING_LENGTHS:
+            for start in range(len(token) - length + 1):
+                if sha(token[start:start + length]) in BANNED_WORDS:
+                    found = True
+                    break
+            if found:
+                break
+    _word_cache[token] = found
+    return found
+
+
+def git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+    )
+    return result.stdout.decode("utf-8", "replace")
+
+
+class Audit:
+    def __init__(self, machine_names: set[str]) -> None:
+        self.findings: list[str] = []
+        self._seen: set[str] = set()
+        self._machine = machine_names
+
+    def report(self, category: str, where: str, excerpt: str) -> None:
+        line = f"[{category}] {where}: {excerpt.strip()[:160]}"
+        if line not in self._seen:
+            self._seen.add(line)
+            self.findings.append(line)
+
+    def text(self, where: str, line: str, check_names: bool = True) -> None:
+        """Check one line of text."""
+        if "@" in line:
+            for match in EMAIL.finditer(line):
+                address = match.group(0).lower()
+                if address != AUTHOR_EMAIL and not address.endswith(ALLOWED_EMAIL_SUFFIXES):
+                    self.report("email", where, match.group(0))
+        if "." in line:
+            for match in IPV4.finditer(line):
+                if any(int(part) > 255 for part in match.groups()):
+                    continue
+                if VERSION_CONTEXT.search(line[:match.start()]):
+                    continue
+                if not _allowed_address(match.group(0)):
+                    self.report("ip-address", where, match.group(0))
+        if ":" in line:
+            for match in IPV6.finditer(line):
+                try:
+                    address = ipaddress.IPv6Address(match.group(0))
+                except ValueError:
+                    continue
+                if not any(address in net for net in ALLOWED_NETWORKS if net.version == 6):
+                    self.report("ip-address", where, match.group(0))
+            for match in MAC.finditer(line):
+                self.report("mac-address", where, match.group(0))
+        if "/" in line or "\\" in line:
+            for match in HOME_PATH.finditer(line):
+                self.report("home-path", where, match.group(0))
+        if not check_names:
+            return
+        words = [word.lower() for word in WORD.findall(line)]
+        for word in words:
+            if len(word) >= 3 and is_banned_word(word):
+                self.report("tool-name", where, line)
+                break
+            if word in self._machine:
+                self.report("machine-name", where, line)
+                break
+        for size, hashes in BANNED_PHRASES.items():
+            for start in range(len(words) - size + 1):
+                if sha(" ".join(words[start:start + size])) in hashes:
+                    self.report("attribution-phrase", where, line)
+                    break
+
+
+def _allowed_address(text: str) -> bool:
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return True
+    return any(address in net for net in ALLOWED_NETWORKS if net.version == address.version)
+
+
+def machine_names() -> set[str]:
+    names = set()
+    for getter in (socket.gethostname, getpass.getuser):
+        try:
+            value = getter().split(".")[0].lower()
+        except Exception:
+            continue
+        if len(value) >= 4 and value not in GENERIC_MACHINE_NAMES:
+            names.add(value)
+    return names
+
+
+def scan_tree(root: Path, audit: Audit) -> int:
+    files = [name for name in git(root, "ls-files", "-co", "--exclude-standard", "-z").split("\0") if name]
+    for name in files:
+        path = root / name
+        check_names = name not in NAME_CHECK_EXEMPT
+        audit.text(f"tree:{name} (file name)", name, check_names)
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        if name.lower().endswith(IMAGE_SUFFIXES):
+            for mark in IMAGE_METADATA_MARKS:
+                if mark in data:
+                    audit.report("image-metadata", f"tree:{name}", mark.decode("ascii"))
+            continue
+        if b"\0" in data[:8192]:
+            continue
+        for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), start=1):
+            audit.text(f"tree:{name}:{number}", line, check_names)
+    return len(files)
+
+
+def scan_history(root: Path, audit: Audit) -> int:
+    records = git(
+        root, "log", "--all", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e"
+    ).split("\x1e")
+    commits = 0
+    for record in records:
+        if not record.strip():
+            continue
+        commit, author, author_email, committer, committer_email, message = (
+            record.strip("\n").split("\x1f", 5)
+        )
+        commits += 1
+        where = f"history:{commit[:10]}"
+        if (author, author_email) != (AUTHOR_NAME, AUTHOR_EMAIL):
+            audit.report("identity", where, f"author is {author} <{author_email}>")
+        if (committer, committer_email) != (AUTHOR_NAME, AUTHOR_EMAIL):
+            audit.report("identity", where, f"committer is {committer} <{committer_email}>")
+        for line in message.splitlines():
+            audit.text(f"{where} (message)", line)
+
+    for ref in git(root, "for-each-ref", "--format=%(refname)").splitlines():
+        audit.text(f"ref:{ref}", ref)
+
+    commit, name = "", ""
+    patch = git(root, "log", "--all", "-p", "-U0", "--no-color", "--no-ext-diff",
+                "--format=commit:%H")
+    for line in patch.splitlines():
+        if line.startswith("commit:"):
+            commit, name = line[7:17], ""
+        elif line.startswith("+++ "):
+            name = line[6:] if line.startswith("+++ b/") else ""
+            if name:
+                audit.text(f"history:{commit}:{name} (file name)", name,
+                           name not in NAME_CHECK_EXEMPT)
+        elif line.startswith("+") and name:
+            audit.text(f"history:{commit}:{name}", line[1:], name not in NAME_CHECK_EXEMPT)
+    return commits
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--no-history", action="store_true", help="scan the working tree only")
+    parser.add_argument("--root", type=Path, default=None, help="repository to scan")
+    args = parser.parse_args()
+
+    start = args.root or Path(__file__).resolve().parent.parent
+    try:
+        root = Path(git(start, "rev-parse", "--show-toplevel").strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("error: not inside a git repository", file=sys.stderr)
+        return 2
+
+    audit = Audit(machine_names())
+    files = scan_tree(root, audit)
+    commits = 0 if args.no_history else scan_history(root, audit)
+
+    for finding in audit.findings:
+        print(finding)
+    scope = f"{files} files" + ("" if args.no_history else f", {commits} commits")
+    if audit.findings:
+        print(f"\n{len(audit.findings)} finding(s) in {scope}.", file=sys.stderr)
+        return 1
+    print(f"clean: {scope}, no footprints found.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
