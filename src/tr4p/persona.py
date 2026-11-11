@@ -108,8 +108,8 @@ class Persona:
         return self.learned_banner if self.learned_banner is not None else self.banner
 
     def learn_banner(self, value: str | None) -> None:
-        """Adopt the upstream's Server header (empty string means it sends none)."""
-        if self.learned_banner is None and value is not None:
+        """Adopt the protected site's Server header the first time we see one."""
+        if self.learned_banner is None and value:
             self.learned_banner = value[:120]
 
     def learn_not_found(self, status: int, content_type: str, body: bytes) -> None:
