@@ -1,0 +1,76 @@
+name: CI
+
+# Linux runs on every push. Windows and macOS cost more runner minutes, so
+# they only run when started by hand (Actions tab -> CI -> Run workflow).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: "Also run Windows and macOS"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the footprint audit reads the whole history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Tests
+        run: python -m pytest -q
+      - name: Footprint audit
+        run: python scripts/audit-footprints
+
+  cross-platform:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    if: github.event_name == 'workflow_dispatch' && inputs.full_matrix
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Tests
+        run: python -m pytest -q
+      - name: Footprint audit
+        run: python scripts/audit-footprints
