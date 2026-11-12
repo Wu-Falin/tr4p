@@ -61,6 +61,13 @@ class PublicConfig:
     # Peers allowed to tell us the real client address (your TLS proxy or CDN).
     trusted_proxies: list[str] = field(default_factory=list)
     client_ip_header: str = "X-Forwarded-For"
+    # Self-protection. Connections beyond the cap are refused, after first
+    # trying to free a slot by dropping the oldest tarpitted connection.
+    max_connections: int = 4096
+    # A connection with no request in progress is closed after this long.
+    idle_timeout: float = 20.0
+    # An upload that stalls for this long is abandoned.
+    body_timeout: float = 30.0
 
 
 @dataclass
@@ -92,6 +99,10 @@ class DetectionConfig:
     inspect_body_bytes: int = 8192
     verify_crawlers: bool = True
     extra_scanner_agents: list[str] = field(default_factory=list)
+    # Evidence that reaches a session only because it shares an address and
+    # header fingerprint with a trapped one counts for this fraction, and can
+    # never lift the session above the medium tier by itself.
+    inherited_weight: float = 0.7
 
 
 @dataclass
@@ -115,6 +126,39 @@ class SessionConfig:
     max_tracked: int = 20000
     idle_seconds: float = 1800.0
     flagged_days: float = 7.0
+    # A flagged session with no new signal for this long starts over.
+    trap_ttl_hours: float = 24.0
+    # Evidence inherited by fingerprint alone is forgotten much sooner.
+    inherited_ttl_minutes: float = 30.0
+
+
+@dataclass
+class TarpitConfig:
+    """Escalating delays for sessions in the medium and high tiers."""
+
+    enabled: bool = True
+    # 1-5 selects a preset for the three delay values below; 0 means custom.
+    level: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 16.0
+    # Medium-tier sessions never wait longer than this ("light" tarpit).
+    light_max_delay: float = 2.0
+    # The delay doubles after this many delayed requests.
+    phase_requests: int = 2
+    jitter: float = 0.15
+    # While a response is held back, a piece of it is sent this often so the
+    # client's read timeout never fires.
+    drip_interval: float = 2.0
+    # Clients that pile up parallel requests or abandon delayed ones move
+    # through the phases faster. Only ever applies to already trapped sessions.
+    adaptive: bool = True
+    # Self-protection: sessions held at once (oldest is dropped beyond this),
+    # requests per held session, and memory spent on held responses.
+    max_sessions: int = 2000
+    session_concurrency: int = 2
+    session_queue: int = 6
+    buffer_bytes: int = 256 * 1024
+    buffer_total_bytes: int = 48 * 1024 * 1024
 
 
 @dataclass
@@ -132,6 +176,7 @@ class Config:
     canary: CanaryConfig = field(default_factory=CanaryConfig)
     inject: InjectConfig = field(default_factory=InjectConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
+    tarpit: TarpitConfig = field(default_factory=TarpitConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     # Addresses or networks that bypass detection (your own pentest hosts).
     whitelist: list[str] = field(default_factory=list)
@@ -156,6 +201,25 @@ class Config:
         if not isinstance(raw, dict):
             raise ConfigError(f"{path.name} must contain a JSON object")
         return cls.from_dict(raw)
+
+    def apply(self, changes: dict[str, Any]) -> None:
+        """Apply a partial update in place, or raise ConfigError and change
+        nothing. Running components keep their references to the section
+        objects, so the new values take effect immediately."""
+        merged = self.to_dict()
+        for section, values in changes.items():
+            if isinstance(merged.get(section), dict) and isinstance(values, dict):
+                merged[section].update(values)
+            else:
+                merged[section] = values
+        candidate = Config.from_dict(merged)
+        for item in dataclasses.fields(self):
+            current, fresh = getattr(self, item.name), getattr(candidate, item.name)
+            if dataclasses.is_dataclass(current):
+                for inner in dataclasses.fields(current):
+                    setattr(current, inner.name, getattr(fresh, inner.name))
+            else:
+                setattr(self, item.name, fresh)
 
     def save(self, path: Path) -> None:
         self.validate()
@@ -208,6 +272,28 @@ class Config:
         _require(self.session.max_tracked >= 100, "session.max_tracked must be >= 100")
         _require(self.session.idle_seconds > 0, "session.idle_seconds must be positive")
         _require(self.session.flagged_days > 0, "session.flagged_days must be positive")
+        _require(self.session.trap_ttl_hours > 0, "session.trap_ttl_hours must be positive")
+        _require(self.session.inherited_ttl_minutes > 0,
+                 "session.inherited_ttl_minutes must be positive")
+        _require(0 <= det.inherited_weight <= 1, "detection.inherited_weight must be 0-1")
+        _require(public.max_connections >= 16, "public.max_connections must be >= 16")
+        _require(public.idle_timeout >= 1, "public.idle_timeout must be >= 1")
+        _require(public.body_timeout >= 1, "public.body_timeout must be >= 1")
+        pit = self.tarpit
+        _require(0 <= pit.level <= 5, "tarpit.level must be 0 (custom) or 1-5")
+        _require(0.1 <= pit.base_delay <= 60, "tarpit.base_delay must be 0.1-60 seconds")
+        _require(pit.base_delay <= pit.max_delay <= 300,
+                 "tarpit.max_delay must be between base_delay and 300 seconds")
+        _require(0 < pit.light_max_delay <= pit.max_delay,
+                 "tarpit.light_max_delay must be positive and at most max_delay")
+        _require(pit.phase_requests >= 1, "tarpit.phase_requests must be >= 1")
+        _require(0 <= pit.jitter <= 0.5, "tarpit.jitter must be 0-0.5")
+        _require(pit.drip_interval >= 0.2, "tarpit.drip_interval must be >= 0.2")
+        _require(10 <= pit.max_sessions <= 100000, "tarpit.max_sessions must be 10-100000")
+        _require(1 <= pit.session_concurrency <= 16, "tarpit.session_concurrency must be 1-16")
+        _require(0 <= pit.session_queue <= 64, "tarpit.session_queue must be 0-64")
+        _require(pit.buffer_bytes >= 0, "tarpit.buffer_bytes must be >= 0")
+        _require(pit.buffer_total_bytes >= 0, "tarpit.buffer_total_bytes must be >= 0")
         _require(self.storage.max_events >= 1000, "storage.max_events must be >= 1000")
         _require(dash.session_hours > 0, "dashboard.session_hours must be positive")
         parse_networks(self.whitelist, "whitelist")

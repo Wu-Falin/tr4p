@@ -27,9 +27,20 @@ class Session:
     user_agent: str = ""
     group_key: str = ""
     signals: dict[str, int] = field(default_factory=dict)
+    # Evidence carried over from a session with the same address and header
+    # fingerprint. Weighted lower and forgotten sooner than own signals.
+    inherited: dict[str, int] = field(default_factory=dict)
+    inherited_at: float = 0.0
+    last_signal: float = 0.0
     score: float = 0.0
     tier: str = "none"
     released: bool = False
+    # Tarpit state: current phase, delayed requests so far, and the cached
+    # head of the cookie hash chain for that phase.
+    phase: int = 0
+    hits: int = 0
+    chain: bytes | None = None
+    chain_phase: int = -1
     crawler: str = ""          # "", "pending", "verified" or "unverified"
     agent_class: str = ""      # cached user-agent category
     agent_name: str = ""
@@ -49,7 +60,7 @@ class Session:
 
     @property
     def flagged(self) -> bool:
-        return bool(self.signals)
+        return bool(self.signals) or bool(self.inherited)
 
     def snapshot(self) -> dict[str, Any]:
         """Plain data for storage and the dashboard."""
@@ -62,6 +73,11 @@ class Session:
             "user_agent": self.user_agent,
             "group_key": self.group_key,
             "signals": dict(self.signals),
+            "inherited": dict(self.inherited),
+            "inherited_at": self.inherited_at,
+            "last_signal": self.last_signal,
+            "phase": self.phase,
+            "hits": self.hits,
             "score": self.score,
             "tier": self.tier,
             "released": self.released,
@@ -80,6 +96,11 @@ class Session:
             user_agent=str(data.get("user_agent", "")),
             group_key=str(data.get("group_key", "")),
             signals={str(k): int(v) for k, v in dict(data.get("signals", {})).items()},
+            inherited={str(k): int(v) for k, v in dict(data.get("inherited", {})).items()},
+            inherited_at=float(data.get("inherited_at", 0.0)),
+            last_signal=float(data.get("last_signal", data.get("last_seen", 0.0))),
+            phase=max(0, int(data.get("phase", 0))),
+            hits=max(0, int(data.get("hits", 0))),
             score=float(data.get("score", 0.0)),
             tier=str(data.get("tier", "none")),
             released=bool(data.get("released", False)),

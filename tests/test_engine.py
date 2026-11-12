@@ -43,11 +43,12 @@ def test_normal_browsing_raises_nothing():
 def test_cookie_round_trip_and_forgery():
     engine, _, _ = make_engine()
     cookie = engine.mint_cookie()
-    assert engine.read_cookie(cookie) is not None
-    assert len(cookie) == 30 and "." not in cookie
+    ident, phase = engine.read_cookie(cookie)
+    assert phase == 0 and len(ident) == 24
+    assert len(cookie) == 31 and "." not in cookie
     tampered = ("A" if cookie[0] != "A" else "B") + cookie[1:]
     assert engine.read_cookie(tampered) is None
-    assert engine.read_cookie("x" * 30) is None
+    assert engine.read_cookie("x" * 31) is None
     assert engine.read_cookie("") is None
     assert engine.read_cookie(None) is None
     other, _, _ = make_engine(seed=make_seed(99))

@@ -73,3 +73,30 @@ def test_thresholds_are_respected():
     signals = {"canary_path": 1, "generic_client": 1}  # 55
     assert tier(signals, medium=60, trap=90) == "low"
     assert tier(signals, medium=40, trap=50) == "high"
+
+
+def inherited_tier(own, inherited, weight=0.7):
+    score = confidence(own, DEFAULT_WEIGHTS, inherited, weight)
+    return tier_for(own, score, 40.0, 70.0, 3, inherited), score
+
+
+def test_inherited_evidence_is_discounted_per_group():
+    _, score = inherited_tier({}, {"canary_path": 1, "rate": 1})
+    assert score == 49.0                                   # (45 + 25) * 0.7
+    _, score = inherited_tier({"canary_path": 1}, {"canary_path": 1, "rate": 1})
+    assert score == 62.5                                   # own 45 beats inherited 31.5
+
+
+def test_inherited_evidence_alone_never_reaches_high():
+    everything = {name: 9 for name in DEFAULT_WEIGHTS}
+    tier, score = inherited_tier({}, everything, weight=1.0)
+    assert score == 100.0 and tier == "medium"
+    assert inherited_tier({}, {"honeytoken": 1})[0] == "medium"
+    assert inherited_tier({}, {"canary_path": 1})[0] == "low"
+
+
+def test_a_weak_own_signal_does_not_unlock_high_through_inherited_ones():
+    inherited = {"honeytoken": 1, "canary_path": 3, "rate": 2}
+    assert inherited_tier({"generic_client": 1}, inherited)[0] == "medium"
+    assert inherited_tier({"canary_path": 1}, inherited)[0] == "high"
+    assert inherited_tier({"scanner_ua": 1, "attack_payload": 1, "rate": 1}, inherited)[0] == "high"

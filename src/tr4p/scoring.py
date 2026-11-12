@@ -11,6 +11,9 @@ Rules, in plain words:
   independent groups agreeing.
 * A honeytoken coming back is the single exception: nobody can hold one
   without having read hidden bait first, so it is sufficient by itself.
+* Evidence a session merely inherited, because it shares an address and
+  header fingerprint with a trapped one, counts at reduced weight and can
+  never produce the high tier without the session's own signals.
 """
 
 from __future__ import annotations
@@ -54,17 +57,32 @@ def evidence_groups(signals: Mapping[str, int]) -> set[str]:
     return {GROUPS[name] for name, count in signals.items() if count > 0 and name in GROUPS}
 
 
-def confidence(signals: Mapping[str, int], weights: Mapping[str, float]) -> float:
-    """Combine signals into a 0-100 confidence value."""
+def _group_values(signals: Mapping[str, int], weights: Mapping[str, float], factor: float) -> dict[str, float]:
+    """Strongest signal per evidence group, with the repeat bonus applied."""
     best: dict[str, float] = {}
     for name, count in signals.items():
         if count <= 0 or name not in GROUPS:
             continue
         repeats = min(count - 1, REPEAT_BONUS_CAP)
-        value = weights.get(name, 0.0) * (1.0 + REPEAT_BONUS_STEP * repeats)
+        value = weights.get(name, 0.0) * (1.0 + REPEAT_BONUS_STEP * repeats) * factor
         group = GROUPS[name]
         if value > best.get(group, 0.0):
             best[group] = value
+    return best
+
+
+def confidence(
+    signals: Mapping[str, int],
+    weights: Mapping[str, float],
+    inherited: Mapping[str, int] | None = None,
+    inherited_weight: float = 1.0,
+) -> float:
+    """Combine signals into a 0-100 confidence value."""
+    best = _group_values(signals, weights, 1.0)
+    if inherited:
+        for group, value in _group_values(inherited, weights, inherited_weight).items():
+            if value > best.get(group, 0.0):
+                best[group] = value
     return min(100.0, round(sum(best.values()), 1))
 
 
@@ -74,19 +92,26 @@ def tier_for(
     medium_threshold: float,
     trap_threshold: float,
     high_min_groups: int,
+    inherited: Mapping[str, int] | None = None,
 ) -> str:
     """Map signals and score to a tier, enforcing the two-signal rule."""
-    active = {name for name, count in signals.items() if count > 0}
+    own = {name for name, count in signals.items() if count > 0}
+    carried = {name for name, count in (inherited or {}).items() if count > 0}
+    active = own | carried
     if not active:
         return TIER_NONE
-    if "honeytoken" in active:
+    if "honeytoken" in own:
         return TIER_HIGH
-    groups = evidence_groups(signals)
-    if len(groups) < 2:
+    groups = {GROUPS[name] for name in active if name in GROUPS}
+    # An inherited honeytoken still stands on its own as evidence; it is
+    # only barred from reaching the high tier (the `own` check below).
+    if len(groups) < 2 and "honeytoken" not in carried:
         return TIER_LOW
     if score >= trap_threshold:
-        has_canary = bool(active & CANARY_TYPES)
-        enough_groups = high_min_groups >= 2 and len(groups) >= high_min_groups
+        # What qualifies a session for the high tier must be its own doing.
+        own_groups = {GROUPS[name] for name in own if name in GROUPS}
+        has_canary = bool(own & CANARY_TYPES)
+        enough_groups = high_min_groups >= 2 and len(own_groups) >= high_min_groups
         if has_canary or enough_groups:
             return TIER_HIGH
     if score >= medium_threshold:

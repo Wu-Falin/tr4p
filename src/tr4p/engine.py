@@ -1,9 +1,23 @@
 """Detection engine.
 
 Turns requests into signals, signals into a confidence score, and the score
-into a tier. It knows nothing about HTTP libraries or storage: the listener
-feeds it plain request facts, and everything it learns leaves through a sink.
-That keeps the rules easy to read and easy to test.
+into a tier. For trapped sessions it also decides how long the answer is held
+back. It knows nothing about HTTP libraries or storage: the listener feeds it
+plain request facts, and everything it learns leaves through a sink. That
+keeps the rules easy to read and easy to test.
+
+Session cookie and hash chain
+-----------------------------
+The session cookie is the head of an HMAC hash chain:
+
+    link(0) = HMAC(key, id)
+    link(n) = HMAC(key, link(n-1) | id | n)
+    cookie  = id | n | first bytes of link(n)
+
+`n` is the tarpit phase. Only the server can produce the next link, so a
+client can neither invent a phase nor alter one. Server memory stays the
+authority against replaying an older cookie; what the chain adds is that a
+restarted server resumes a trapped session at the phase its cookie proves.
 """
 
 from __future__ import annotations
@@ -11,6 +25,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import random
 import re
 import secrets
 import time
@@ -42,7 +57,8 @@ _AUTH_PATH = re.compile(
 _PAYLOAD_HEADERS = ("user-agent", "referer", "x-api-version", "x-forwarded-host")
 _COOKIE_ID_BYTES = 12
 _COOKIE_TAG_BYTES = 10
-_COOKIE_LENGTH = 30  # base64url of 22 bytes, padding stripped
+_COOKIE_LENGTH = 31  # base64url of id + phase byte + tag, padding stripped
+MAX_PHASE = 40
 
 # Signals describing what a client *is*; raised at most once per session.
 _ONE_SHOT = frozenset({"scanner_ua", "generic_client", "header_anomaly", "no_assets"})
@@ -89,6 +105,7 @@ class Verdict:
     canary: CanaryHit | None = None
     bait: str | None = None
     tier: str = scoring.TIER_NONE
+    delay: float = 0.0      # seconds to hold the answer back (0 = not trapped)
 
 
 class Sink(Protocol):
@@ -104,6 +121,8 @@ class Counters:
     signals: int = 0
     canary_hits: int = 0
     alerts: int = 0
+    delayed: int = 0
+    expired: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
 
 
@@ -120,6 +139,7 @@ class Engine:
         self._seed = seed
         self._sink = sink
         self._clock = clock
+        self._random = random.Random()
         self.canaries = Canaries(
             seed, config.canary.rotation_hours, config.canary.keep_rotations, clock
         )
@@ -137,24 +157,56 @@ class Engine:
 
     # ------------------------------------------------------------------ cookies
 
-    def mint_cookie(self) -> str:
-        """Create a signed, opaque session cookie value."""
-        ident = secrets.token_bytes(_COOKIE_ID_BYTES)
-        tag = self._seed.sign("cookie", ident, _COOKIE_TAG_BYTES)
-        return base64.urlsafe_b64encode(ident + tag).decode("ascii").rstrip("=")
+    def _link(self, ident: bytes, phase: int, session: Session | None = None) -> bytes:
+        """Chain link for a phase. Continues from the session's cached link
+        when possible, otherwise walks the chain from its start."""
+        if session is not None and session.chain is not None and session.chain_phase <= phase:
+            link, at = session.chain, session.chain_phase
+        else:
+            link, at = self._seed.digest("chain", ident), 0
+        for step in range(at + 1, phase + 1):
+            link = self._seed.digest("chain", link, ident, step)
+        if session is not None:
+            session.chain, session.chain_phase = link, phase
+        return link
 
-    def read_cookie(self, value: str | None) -> str | None:
-        """Return the session id carried by a cookie, or None if it is not ours."""
+    def mint_cookie(
+        self, ident: bytes | None = None, phase: int = 0, session: Session | None = None
+    ) -> str:
+        """Create the signed, opaque session cookie value for a phase."""
+        if ident is None:
+            ident = secrets.token_bytes(_COOKIE_ID_BYTES)
+        phase = max(0, min(phase, MAX_PHASE))
+        tag = self._link(ident, phase, session)[:_COOKIE_TAG_BYTES]
+        raw = ident + bytes([phase]) + tag
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _parse_cookie(value: str | None) -> tuple[bytes, int, bytes] | None:
         if not value or len(value) != _COOKIE_LENGTH:
             return None
         try:
-            raw = base64.urlsafe_b64decode(value + "==")
+            raw = base64.urlsafe_b64decode(value + "=")
         except (binascii.Error, ValueError):
             return None
-        ident, tag = raw[:_COOKIE_ID_BYTES], raw[_COOKIE_ID_BYTES:]
-        if len(tag) != _COOKIE_TAG_BYTES or not self._seed.verify("cookie", ident, tag):
+        if len(raw) != _COOKIE_ID_BYTES + 1 + _COOKIE_TAG_BYTES:
             return None
-        return ident.hex()
+        phase = raw[_COOKIE_ID_BYTES]
+        if phase > MAX_PHASE:
+            return None
+        return raw[:_COOKIE_ID_BYTES], phase, raw[_COOKIE_ID_BYTES + 1:]
+
+    def read_cookie(self, value: str | None) -> tuple[str, int] | None:
+        """Return (session id, phase) carried by a cookie, or None if it is
+        not one of ours."""
+        parsed = self._parse_cookie(value)
+        if parsed is None:
+            return None
+        ident, phase, tag = parsed
+        expected = self._link(ident, phase)[:_COOKIE_TAG_BYTES]
+        if not secrets.compare_digest(expected, tag):
+            return None
+        return ident.hex(), phase
 
     # ----------------------------------------------------------------- requests
 
@@ -171,14 +223,22 @@ class Engine:
             f"{info.ip}|{client_print}".encode("utf-8", "replace")
         ).hexdigest()[:20]
 
-        ident = self.read_cookie(info.cookie)
-        if ident is not None:
-            session = self.sessions.get(ident)
-            if session is None:
-                session = self.sessions.create(ident, now)
-                self._adopt_group(session, group_key)
-        else:
+        ident: bytes | None = None
+        token_phase = 0
+        session: Session | None = None
+        parsed = self._parse_cookie(info.cookie)
+        if parsed is not None:
+            candidate, token_phase, tag = parsed
+            known = self.sessions.get(candidate.hex())
+            expected = self._link(candidate, token_phase, known)[:_COOKIE_TAG_BYTES]
+            if secrets.compare_digest(expected, tag):
+                ident, session = candidate, known
+                if session is None:
+                    session = self.sessions.create(ident.hex(), now)
+                    self._adopt_group(session, group_key, now)
+        if session is None:
             session = self.sessions.get(group_key) or self.sessions.create(group_key, now)
+        self._expire(session, now)
 
         user_agent = info.headers.get("user-agent", "")
         if user_agent != session.user_agent:
@@ -195,10 +255,20 @@ class Engine:
         self._apply(session, signals, info, now)
         verdict.tier = session.tier
 
+        if self._is_trapped(session):
+            if token_phase > session.phase:
+                # The cookie proves a later phase than we remember (restart).
+                session.phase = token_phase
+            self._plan_delay(session, info, verdict, now)
+
         if ident is None:
             mode = self._config.session.cookie_mode
             if mode == "always" or (mode == "on_signal" and session.flagged):
                 verdict.new_cookie = self.mint_cookie()
+        elif token_phase != session.phase:
+            # Keep the cookie at the head of the chain (or back at its start
+            # once a trap has expired or been released).
+            verdict.new_cookie = self.mint_cookie(ident, session.phase, session)
         return verdict
 
     def finish(
@@ -380,6 +450,7 @@ class Engine:
             if count and signal.type in _ONE_SHOT:
                 continue
             session.signals[signal.type] = count + 1
+            session.last_signal = now
             fresh.append(signal)
             self.counters.signals += 1
             self.counters.by_type[signal.type] = self.counters.by_type.get(signal.type, 0) + 1
@@ -387,8 +458,8 @@ class Engine:
                 self.counters.canary_hits += 1
         if not fresh:
             return
+        self.sessions.promote(session)
         if not was_flagged:
-            self.sessions.promote(session)
             self._maybe_verify_crawler(session)
         self._rescore(session)
 
@@ -410,36 +481,57 @@ class Engine:
                 self._link_group(session, now)
         self._sink.session(session.snapshot())
 
-    def _rescore(self, session: Session) -> None:
+    def _rescore(self, session: Session, allow_drop: bool = False) -> None:
         det = self._det
-        session.score = scoring.confidence(session.signals, det.weights)
+        session.score = scoring.confidence(
+            session.signals, det.weights, session.inherited, det.inherited_weight
+        )
         if session.released or session.crawler == "verified":
             session.tier = scoring.TIER_NONE
             return
         tier = scoring.tier_for(
             session.signals, session.score,
             det.medium_threshold, det.trap_threshold, det.high_min_groups,
+            session.inherited,
         )
-        # Tiers only go up by themselves. Coming back down is a human
-        # decision (release), not something an attacker can wait out.
-        if scoring.TIER_RANK[tier] > scoring.TIER_RANK[session.tier]:
+        # Tiers only go up by themselves. They come down when a human
+        # releases the session or when the evidence expires, never because
+        # a new request happened to look harmless.
+        if allow_drop or scoring.TIER_RANK[tier] > scoring.TIER_RANK[session.tier]:
             session.tier = tier
 
-    def _adopt_group(self, session: Session, group_key: str) -> None:
+    def _is_trapped(self, session: Session) -> bool:
+        return (
+            session.tier in (scoring.TIER_MEDIUM, scoring.TIER_HIGH)
+            and not session.released
+            and session.crawler != "verified"
+        )
+
+    def _carry(self, source: Session, target: Session, now: float) -> None:
+        """Copy evidence to a session that shares only address and header
+        fingerprint with the source. It lands as inherited evidence."""
+        for bucket in (source.signals, source.inherited):
+            for name, count in bucket.items():
+                if count > target.inherited.get(name, 0):
+                    target.inherited[name] = count
+        target.inherited_at = now
+        target.phase = max(target.phase, source.phase)
+        self.sessions.promote(target)
+        self._rescore(target)
+
+    def _adopt_group(self, session: Session, group_key: str, now: float) -> None:
         """A new cookie does not launder a trapped client: a fresh session
-        inherits the state of the flagged cookie-less group it comes from."""
+        inherits the evidence of the trapped cookie-less group it comes
+        from, at reduced weight."""
         group = self.sessions.get(group_key)
-        if group is None or group.released:
+        if group is None or group.released or not self._is_trapped(group):
             return
-        if scoring.TIER_RANK[group.tier] < scoring.TIER_RANK[scoring.TIER_MEDIUM]:
-            return
-        session.signals = dict(group.signals)
-        session.score = group.score
-        session.tier = group.tier
-        self.sessions.promote(session)
+        self._expire(group, now)
+        if self._is_trapped(group):
+            self._carry(group, session, now)
 
     def _link_group(self, session: Session, now: float) -> None:
-        """Carry a trapped cookie session's state over to its cookie-less
+        """Carry a trapped cookie session's evidence over to its cookie-less
         group, so dropping the cookie does not reset detection."""
         if session.is_group or not session.group_key:
             return
@@ -450,13 +542,84 @@ class Engine:
             group.user_agent = session.user_agent
         if group.released:
             return
-        for name, count in session.signals.items():
-            if count > group.signals.get(name, 0):
-                group.signals[name] = count
         group.last_seen = now
-        self.sessions.promote(group)
-        self._rescore(group)
+        self._carry(session, group, now)
         self._sink.session(group.snapshot())
+
+    def _expire(self, session: Session, now: float) -> None:
+        """Forget stale evidence. Inherited evidence goes first; a session's
+        own signals follow once none has been added for the trap lifetime."""
+        cfg = self._config.session
+        changed = False
+        if session.inherited and now - session.inherited_at > cfg.inherited_ttl_minutes * 60.0:
+            session.inherited = {}
+            changed = True
+        if session.signals and now - session.last_signal > cfg.trap_ttl_hours * 3600.0:
+            session.signals = {}
+            session.pages = session.assets = 0
+            session.agent_class = ""
+            changed = True
+        if not changed:
+            return
+        previous = session.tier
+        self._rescore(session, allow_drop=True)
+        if not self._is_trapped(session):
+            session.phase = session.hits = 0
+        if session.tier != previous:
+            self.counters.expired += 1
+            self._emit("expired", session, None, now,
+                       detail=f"evidence expired: {previous} -> {session.tier}")
+        self._sink.session(session.snapshot())
+
+    # ------------------------------------------------------------------- tarpit
+
+    def _plan_delay(
+        self, session: Session, info: RequestInfo, verdict: Verdict, now: float
+    ) -> None:
+        """Decide how long this answer is held back, then count the request
+        towards the next phase."""
+        cfg = self._config.tarpit
+        if not cfg.enabled or session.crawler == "pending":
+            return
+        light = session.tier == scoring.TIER_MEDIUM
+        if light and info.is_asset:
+            return   # the light tarpit spares a page's styles, scripts and images
+        delay = min(cfg.max_delay, cfg.base_delay * (2 ** min(session.phase, 30)))
+        if light:
+            delay = min(delay, cfg.light_max_delay)
+        if cfg.jitter:
+            delay *= 1.0 + self._random.uniform(-cfg.jitter, cfg.jitter)
+        verdict.delay = delay
+        self.counters.delayed += 1
+        session.hits += 1
+        if session.hits % cfg.phase_requests == 0:
+            self._advance(session, info, now, "")
+
+    def _advance(self, session: Session, info: RequestInfo | None, now: float, reason: str) -> None:
+        if session.phase >= MAX_PHASE:
+            return
+        cfg = self._config.tarpit
+        still_growing = cfg.base_delay * (2 ** session.phase) < cfg.max_delay
+        session.phase += 1
+        # Routine steps are only worth a log line while the delay still grows.
+        if reason or still_growing:
+            detail = f"phase {session.phase}" + (f" ({reason})" if reason else "")
+            self._emit("tarpit", session, info, now, detail=detail)
+
+    def bump(self, key: str, reason: str) -> bool:
+        """Adaptive difficulty: push a trapped session one phase further
+        because of how it behaves while being held. Never applies to a
+        session that is not already trapped."""
+        session = self.sessions.get(key)
+        if (
+            session is None
+            or not self._config.tarpit.adaptive
+            or not self._is_trapped(session)
+            or session.phase >= MAX_PHASE
+        ):
+            return False
+        self._advance(session, None, self._clock(), reason)
+        return True
 
     # ----------------------------------------------------------------- crawlers
 
@@ -502,6 +665,7 @@ class Engine:
             target.released = released
             if released:
                 target.tier = scoring.TIER_NONE
+                target.phase = target.hits = 0
             self.sessions.promote(target)
             self._rescore(target)
             self._sink.session(target.snapshot())
@@ -533,6 +697,8 @@ class Engine:
             "signals": counters.signals,
             "canary_hits": counters.canary_hits,
             "alerts": counters.alerts,
+            "delayed": counters.delayed,
+            "expired": counters.expired,
             "by_type": dict(counters.by_type),
             "tracked_sessions": len(self.sessions),
             "tiers": self.sessions.tier_counts(),
