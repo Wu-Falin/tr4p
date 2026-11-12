@@ -7,6 +7,9 @@ protected site get hidden tripwires added on the way out.
 
 Rule of the house: anything this layer adds must fail open. If injection or
 bookkeeping breaks, the visitor still gets the original page.
+
+The listener also protects itself: it caps open connections, closes ones
+that sit idle without a request, and abandons uploads that stall.
 """
 
 from __future__ import annotations
@@ -14,9 +17,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-from typing import Any
+import zlib
+from typing import Any, AsyncIterator
 
-from aiohttp import web
+from aiohttp import HttpVersion10, HttpVersion11, web
 from aiohttp.web_protocol import RequestHandler
 from multidict import CIMultiDict
 
@@ -29,6 +33,7 @@ from tr4p.persona import Persona, reason_phrase
 from tr4p.proxy import Upstream, UpstreamError, response_headers
 from tr4p.seed import Seed
 from tr4p.site import BuiltinSite
+from tr4p.tarpit import Tarpit
 
 log = logging.getLogger("tr4p.public")
 
@@ -45,14 +50,25 @@ _BODY_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _ROBOTS_LIMIT = 256 * 1024
 _LEARN_LIMIT = 64 * 1024
 _INTEGRITY_HEADERS = ("Content-Length", "Content-MD5", "Digest", "Accept-Ranges")
+_GZIP_MIN_BYTES = 512
+_GZIP_INLINE_BYTES = 64 * 1024
 
 
 class PublicApp:
-    def __init__(self, config: Config, seed: Seed, engine: Engine, persona: Persona) -> None:
+    def __init__(
+        self,
+        config: Config,
+        seed: Seed,
+        engine: Engine,
+        persona: Persona,
+        tarpit: Tarpit | None = None,
+    ) -> None:
         self._config = config
         self._seed = seed
         self._engine = engine
         self._persona = persona
+        self.tarpit = tarpit or Tarpit(config.tarpit, engine.bump)
+        self.refused_connections = 0
         self._trusted = parse_networks(config.public.trusted_proxies, "public.trusted_proxies")
         self._loot = LootFactory(seed, engine.honeytokens, persona)
         self._upstream: Upstream | None = None
@@ -69,11 +85,16 @@ class PublicApp:
     async def start(self) -> None:
         if self._upstream is not None:
             await self._upstream.start()
+        public = self._config.public
         server = _Server(
             self.handle,
-            _protocol_class(self._render_parse_error),
+            _protocol_class(self._render_parse_error, lambda: public.idle_timeout),
+            limit=lambda: public.max_connections,
+            make_room=self._make_room,
             access_log=None,
+            keepalive_timeout=public.idle_timeout,
         )
+        self._server = server
         self._runner = web.ServerRunner(server, handle_signals=False)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._config.public.host, self._config.public.port)
@@ -91,7 +112,22 @@ class PublicApp:
 
     # ------------------------------------------------------------------ handler
 
+    def _make_room(self) -> bool:
+        """Called when the connection cap is hit: trapped connections are
+        the ones we can afford to lose."""
+        if self.tarpit.drop_oldest():
+            return True
+        self.refused_connections += 1
+        return False
+
+    @property
+    def open_connections(self) -> int:
+        server = getattr(self, "_server", None)
+        return server.open if server is not None else 0
+
     async def handle(self, request: web.BaseRequest) -> web.StreamResponse:
+        protocol = request.protocol
+        protocol.busy += 1
         try:
             return await self._handle(request)
         except UpstreamError as exc:
@@ -101,6 +137,8 @@ class PublicApp:
         except Exception:
             log.exception("unhandled error while serving a request")
             return self._error(request, 500)
+        finally:
+            protocol.busy -= 1
 
     async def _handle(self, request: web.BaseRequest) -> web.StreamResponse:
         headers = request.headers
@@ -142,6 +180,29 @@ class PublicApp:
         verdict = self._engine.begin(info)
         cookie = self._cookie_header(verdict, secure)
 
+        if verdict.delay > 0 and verdict.session is not None:
+            return await self.tarpit.run(
+                request, verdict.session.key, verdict.delay,
+                lambda held: self._answer(
+                    request, info, verdict, client_ip, secure, body, cookie, held),
+                lambda: self._error(request, 503),
+            )
+        return await self._answer(request, info, verdict, client_ip, secure, body, cookie, False)
+
+    async def _answer(
+        self,
+        request: web.BaseRequest,
+        info: RequestInfo,
+        verdict: Verdict,
+        client_ip: str,
+        secure: bool,
+        body: bytes | None,
+        cookie: str | None,
+        held: bool,
+    ) -> web.StreamResponse:
+        """Produce the answer. With held=True (a trapped session) small
+        answers are returned unsent, so the tarpit can drip them out."""
+        path = info.path
         if verdict.canary is not None:
             loot = self._canary_loot(request, info, verdict)
             status = loot.status if loot else 403
@@ -152,7 +213,7 @@ class PublicApp:
             return self._standalone(request, info, verdict, cookie)
         if path == "/robots.txt" and request.method == "GET" and not verdict.whitelisted:
             return await self._robots(request, info, verdict, client_ip, secure, cookie)
-        return await self._proxy(request, info, verdict, client_ip, secure, body, cookie)
+        return await self._proxy(request, info, verdict, client_ip, secure, body, cookie, held)
 
     async def _small_body(self, request: web.BaseRequest, length: int | None) -> bytes | None:
         """Read a request body only when it is small and worth inspecting.
@@ -168,6 +229,22 @@ class PublicApp:
             return await request.content.readexactly(length)
         except asyncio.IncompleteReadError as exc:
             raise ConnectionResetError("client closed during request body") from exc
+
+    async def _body_stream(self, request: web.BaseRequest) -> AsyncIterator[bytes]:
+        """Pass an upload on as it arrives. An upload that stalls is cut off,
+        so slow senders cannot pin the protected site's connections."""
+        timeout = self._config.public.body_timeout
+        reader = request.content
+        while True:
+            try:
+                chunk = await asyncio.wait_for(reader.readany(), timeout)
+            except asyncio.TimeoutError:
+                if request.transport is not None:
+                    request.transport.close()
+                raise ConnectionResetError("upload stalled") from None
+            if not chunk:
+                return
+            yield chunk
 
     # --------------------------------------------------------------- standalone
 
@@ -207,6 +284,7 @@ class PublicApp:
         secure: bool,
         body: bytes | None,
         cookie: str | None,
+        held: bool = False,
     ) -> web.StreamResponse:
         assert self._upstream is not None
         candidate = self._wants_injection(request, info, verdict)
@@ -220,7 +298,7 @@ class PublicApp:
 
         data: Any = body
         if data is None and request.body_exists:
-            data = request.content
+            data = self._body_stream(request)
         upstream = await self._upstream.fetch(request.method, request.raw_path, forward, data)
         try:
             status = upstream.status
@@ -251,6 +329,8 @@ class PublicApp:
                 and self._persona.learned_not_found is None
             ):
                 return await self._relay_learning(request, upstream, headers, content_type)
+            if held:
+                return await self._relay_held(request, upstream, headers, content_type, compress)
             return await self._relay(request, upstream, headers, compress=compress)
         except BaseException:
             upstream.close()
@@ -268,8 +348,8 @@ class PublicApp:
     ) -> web.StreamResponse:
         """Stream an upstream response to the client as it arrives."""
         response = web.StreamResponse(status=upstream.status, reason=upstream.reason, headers=headers)
-        if compress:
-            response.enable_compression()
+        if compress and _accepts_gzip(request):
+            response.enable_compression(web.ContentCoding.gzip)
         await response.prepare(request)
         for chunk in prefix or ():
             await response.write(chunk)
@@ -300,10 +380,46 @@ class PublicApp:
                 headers["ETag"] = "W/" + etag   # no longer byte-identical
         for name in _INTEGRITY_HEADERS:
             headers.popall(name, None)
-        response = web.Response(status=upstream.status, reason=upstream.reason,
-                                body=body, headers=headers)
-        response.enable_compression()
-        return response
+        body = await self._gzip(request, headers, body, content_type)
+        return web.Response(status=upstream.status, reason=upstream.reason,
+                            body=body, headers=headers)
+
+    async def _relay_held(
+        self, request, upstream, headers: CIMultiDict[str], content_type: str, compress: bool
+    ) -> web.StreamResponse:
+        """For a trapped session: take a small answer fully into memory and
+        hand it back unsent. The site's connection is free again at once,
+        and the tarpit is left to send the answer at its own pace."""
+        if request.method == "HEAD" or upstream.status in (204, 304):
+            return web.StreamResponse(status=upstream.status, reason=upstream.reason,
+                                      headers=headers)
+        limit = self._config.tarpit.buffer_bytes
+        declared = upstream.content_length
+        if declared is not None and declared > limit:
+            return await self._relay(request, upstream, headers, compress=compress)
+        chunks, complete = await _buffer(upstream, limit)
+        if not complete:
+            return await self._relay(request, upstream, headers, prefix=chunks, compress=compress)
+        body = b"".join(chunks)
+        headers.popall("Content-Length", None)
+        if compress:
+            body = await self._gzip(request, headers, body, content_type)
+        return web.Response(status=upstream.status, reason=upstream.reason,
+                            body=body, headers=headers)
+
+    async def _gzip(
+        self, request, headers: CIMultiDict[str], body: bytes, content_type: str
+    ) -> bytes:
+        """Compress a buffered body when the client accepts it. Returns the
+        body to send and updates the headers to match."""
+        if not _wants_gzip(request, headers, body, content_type):
+            return body
+        if len(body) <= _GZIP_INLINE_BYTES:
+            packed = _gzip_bytes(body)
+        else:
+            packed = await asyncio.to_thread(_gzip_bytes, body)
+        _mark_gzipped(headers)
+        return packed
 
     async def _relay_learning(
         self, request, upstream, headers: CIMultiDict[str], content_type: str
@@ -439,11 +555,11 @@ class PublicApp:
             headers.update(extra)
         if cookie:
             headers["Set-Cookie"] = cookie
-        response = web.Response(status=status, reason=reason_phrase(status) if status >= 400 else None,
-                                body=body, headers=headers)
-        if compress and len(body) >= 512 and content_type.lower().startswith(_COMPRESSIBLE_TYPES):
-            response.enable_compression()
-        return response
+        if compress and _wants_gzip(request, headers, body, content_type):
+            body = _gzip_bytes(body)
+            _mark_gzipped(headers)
+        return web.Response(status=status, reason=reason_phrase(status) if status >= 400 else None,
+                            body=body, headers=headers)
 
     def _server_header(self) -> str:
         return self._persona.server_header or self._persona.banner
@@ -512,23 +628,111 @@ def _peer_address(request: web.BaseRequest) -> str:
     return ""
 
 
-class _Server(web.Server):
-    """Low-level server whose connections use our protocol class."""
+def _accepts_gzip(request) -> bool:
+    return "gzip" in request.headers.get("accept-encoding", "").lower()
 
-    def __init__(self, handler, protocol_class, **kwargs: Any) -> None:
-        super().__init__(handler, **kwargs)
+
+def _wants_gzip(request, headers, body: bytes, content_type: str) -> bool:
+    return (
+        len(body) >= _GZIP_MIN_BYTES
+        and "Content-Encoding" not in headers
+        and content_type.lower().startswith(_COMPRESSIBLE_TYPES)
+        and _accepts_gzip(request)
+    )
+
+
+def _gzip_bytes(body: bytes) -> bytes:
+    packer = zlib.compressobj(5, zlib.DEFLATED, 31)   # 31 = gzip container
+    return packer.compress(body) + packer.flush()
+
+
+def _mark_gzipped(headers: CIMultiDict[str]) -> None:
+    headers["Content-Encoding"] = "gzip"
+    if "accept-encoding" not in headers.get("Vary", "").lower():
+        headers.add("Vary", "Accept-Encoding")
+    etag = headers.get("ETag")
+    if etag and not etag.startswith("W/"):
+        headers["ETag"] = "W/" + etag
+
+
+class _Server(web.Server):
+    """Low-level server with a connection cap, whose connections use our
+    protocol class."""
+
+    def __init__(self, handler, protocol_class, limit, make_room, **kwargs: Any) -> None:
+        super().__init__(
+            handler,
+            request_factory=self._build_request,
+            handler_cancellation=True,   # a client that hangs up frees its slot at once
+            **kwargs,
+        )
         self._protocol_class = protocol_class
         self._protocol_kwargs = kwargs
+        self._limit = limit
+        self._make_room = make_room
+        self.open = 0
 
     def __call__(self) -> RequestHandler:
         return self._protocol_class(
             self, loop=asyncio.get_running_loop(), **self._protocol_kwargs
         )
 
+    def connection_made(self, handler, transport) -> None:
+        super().connection_made(handler, transport)
+        self.open += 1
+        if self.open > self._limit() and not self._make_room():
+            transport.close()
 
-def _protocol_class(render_error):
+    def connection_lost(self, handler, exc=None) -> None:
+        super().connection_lost(handler, exc)
+        self.open -= 1
+
+    @staticmethod
+    def _build_request(message, payload, protocol, writer, task) -> web.BaseRequest:
+        protocol.seen += 1
+        if message.method == "UNKNOWN" and message.version == HttpVersion10:
+            # Placeholder the HTTP library uses for requests it could not
+            # parse. Real servers answer those as HTTP/1.1.
+            message = message._replace(version=HttpVersion11)
+        return web.BaseRequest(
+            message, payload, protocol, writer, task, asyncio.get_running_loop()
+        )
+
+
+def _protocol_class(render_error, idle_timeout):
     class Protocol(RequestHandler):
-        __slots__ = ()
+        """Connection handler with an idle watchdog.
+
+        `seen` counts requests whose head has arrived, `busy` counts
+        requests being answered. A connection where neither moved for a full
+        interval is closed: that covers idle keep-alives as well as clients
+        that open a connection and never finish sending a request.
+        """
+
+        __slots__ = ("seen", "checked", "busy", "_watchdog")
+
+        def connection_made(self, transport) -> None:
+            self.seen = self.checked = self.busy = 0
+            self._watchdog = asyncio.get_running_loop().call_later(
+                idle_timeout(), self._check_idle
+            )
+            super().connection_made(transport)
+
+        def connection_lost(self, exc) -> None:
+            self._watchdog.cancel()
+            super().connection_lost(exc)
+
+        def _check_idle(self) -> None:
+            transport = self.transport
+            if transport is None:
+                return
+            if self.busy == 0 and self.seen == self.checked:
+                transport.close()
+                return
+            self.checked = self.seen
+            self._watchdog = asyncio.get_running_loop().call_later(
+                idle_timeout(), self._check_idle
+            )
 
         def handle_error(self, request, status=500, exc=None, message=None):
             if status >= 500:
