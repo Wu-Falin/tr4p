@@ -675,6 +675,14 @@ class Engine:
         )
         return True
 
+    def system_event(self, detail: str) -> None:
+        """Record something the operator did (shown in the event feed)."""
+        self._sink.event({
+            "ts": self._clock(), "kind": "system", "session": "", "ip": "", "method": "",
+            "path": "", "signal": "", "detail": detail, "score": 0.0, "tier": "",
+            "user_agent": "", "alert": False,
+        })
+
     def restore(self, snapshots: list[dict[str, Any]]) -> int:
         """Load flagged sessions saved by a previous run."""
         loaded = 0

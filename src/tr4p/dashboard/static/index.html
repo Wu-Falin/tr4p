@@ -32,6 +32,16 @@
         <span class="tier tier-high">high <b id="c-high">0</b></span>
       </div>
     </div>
+    <div class="card">
+      <div class="label">Held right now</div>
+      <div class="value" id="c-held">-</div>
+      <div class="split" id="c-held-note"></div>
+    </div>
+    <div class="card">
+      <div class="label">Attacker time burned</div>
+      <div class="value" id="c-burned">-</div>
+      <div class="split" id="c-burned-note"></div>
+    </div>
     <div class="card"><div class="label">Tracked sessions</div><div class="value" id="c-tracked">-</div></div>
     <div class="card"><div class="label">Mode</div><div class="value small" id="c-mode">-</div>
       <div class="split" id="c-rotation"></div></div>
@@ -45,11 +55,62 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Tier</th><th>Score</th><th>Address</th><th>Signals</th><th>Client</th><th>Last seen</th><th></th></tr>
+          <tr><th>Tier</th><th>Score</th><th>Phase</th><th>Address</th><th>Signals</th><th>Client</th><th>Last seen</th><th></th></tr>
         </thead>
         <tbody id="sessions"></tbody>
       </table>
       <p class="empty" id="sessions-empty">No flagged sessions.</p>
+    </div>
+  </section>
+
+  <section class="panel" id="timeline-panel" hidden>
+    <div class="panel-head">
+      <h2>Session timeline</h2>
+      <span class="note" id="timeline-summary"></span>
+      <button id="timeline-close" class="ghost push" type="button">Close</button>
+    </div>
+    <ol class="feed" id="timeline"></ol>
+    <p class="empty" id="timeline-empty" hidden>No recorded events for this session.</p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Tiring level</h2>
+      <span class="note">How hard trapped sessions are slowed. It never changes who gets trapped.</span>
+    </div>
+    <div class="settings">
+      <div class="levels" id="levels" role="group" aria-label="Tiring level">
+        <button type="button" class="level" data-level="1">1<small>gentle</small></button>
+        <button type="button" class="level" data-level="2">2<small>mild</small></button>
+        <button type="button" class="level" data-level="3">3<small>default</small></button>
+        <button type="button" class="level" data-level="4">4<small>heavy</small></button>
+        <button type="button" class="level" data-level="5">5<small>maximum</small></button>
+      </div>
+      <p class="note" id="level-note"></p>
+      <details>
+        <summary>Advanced settings</summary>
+        <form id="settings-form" class="fields" novalidate>
+          <label>First delay (seconds)
+            <input type="number" name="tarpit.base_delay" min="0.1" max="60" step="0.1"></label>
+          <label>Longest delay (seconds)
+            <input type="number" name="tarpit.max_delay" min="0.1" max="300" step="0.1"></label>
+          <label>Longest delay, medium tier (seconds)
+            <input type="number" name="tarpit.light_max_delay" min="0.1" max="300" step="0.1"></label>
+          <label>Sessions held at once
+            <input type="number" name="tarpit.max_sessions" min="10" max="100000" step="1"></label>
+          <label>Score for medium tier
+            <input type="number" name="detection.medium_threshold" min="1" max="100" step="1"></label>
+          <label>Score for high tier
+            <input type="number" name="detection.trap_threshold" min="1" max="100" step="1"></label>
+          <label class="check"><input type="checkbox" name="tarpit.enabled"> Tarpit on</label>
+          <label class="check"><input type="checkbox" name="tarpit.adaptive"> Adaptive difficulty
+            (trapped sessions only)</label>
+          <div class="actions">
+            <button type="submit" class="primary">Save</button>
+            <span id="settings-message" role="status"></span>
+          </div>
+        </form>
+      </details>
     </div>
   </section>
 

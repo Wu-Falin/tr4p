@@ -106,12 +106,20 @@ class DashboardCase(unittest.IsolatedAsyncioTestCase):
                 bus.publish(event)
 
         self.engine = Engine(self.config, make_seed(), Sink())
+        self.applied = []
+
+        async def apply_settings(changes, note):
+            self.config.apply(changes)
+            self.applied.append((changes, note))
+
         self.dashboard = Dashboard(
             self.config, self.engine, self.store, self.bus, "instance-1",
             status=lambda: {"running": True, "mode": "proxy", "uptime": 5.0,
                             "stats": self.engine.stats()},
+            apply_settings=apply_settings,
         )
         await self.dashboard.start()
+        self.config.dashboard.port = self.dashboard.port          # the real port, not "any"
         self.base = f"http://127.0.0.1:{self.dashboard.port}"
         self.client = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
 
@@ -152,7 +160,8 @@ class Access(DashboardCase):
         self.assertEqual(page.status, 302)
         self.assertEqual(page.headers["Location"], "/login")
         for path in ("/api/v1/status", "/api/v1/events", "/api/v1/sessions",
-                     "/api/v1/session", "/api/v1/stream", "/static/app.js", "/static/app.css"):
+                     "/api/v1/session", "/api/v1/stream", "/static/app.js", "/static/app.css",
+                     "/api/v1/settings", "/api/v1/sessions/timeline?key=x"):
             response, _ = await self.call("GET", path)
             self.assertIn(response.status, (401, 302), path)
         response, _ = await self.call("POST", "/api/v1/sessions/release", {"key": "x"}, POST)
@@ -331,3 +340,89 @@ class FirstRun(DashboardCase):
         locked, _ = await self.call("POST", "/api/v1/setup",
                                     {"code": self.dashboard.setup_code, "password": PASSWORD}, POST)
         self.assertEqual(locked.status, 429)
+
+
+class Settings(DashboardCase):
+    async def test_read_settings_and_presets(self):
+        await self.login()
+        _, data = await self.call("GET", "/api/v1/settings")
+        self.assertEqual(data["level"], 3)
+        self.assertEqual(sorted(data["presets"]), ["1", "2", "3", "4", "5"])
+        self.assertEqual(data["values"]["tarpit"]["max_delay"], 16.0)
+        self.assertEqual(data["values"]["detection"]["trap_threshold"], 70.0)
+
+    async def test_choosing_a_level_applies_its_preset_live(self):
+        headers = await self.login()
+        response, data = await self.call("POST", "/api/v1/settings", {"level": 5}, headers)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["level"], 5)
+        self.assertEqual(self.config.tarpit.max_delay, 60.0)
+        self.assertEqual(self.applied[-1][1], "tiring level set to 5")
+        # A level changes how hard, never who: thresholds are untouched.
+        self.assertEqual(self.config.detection.trap_threshold, 70.0)
+
+    async def test_advanced_values_make_the_level_custom(self):
+        headers = await self.login()
+        body = {"values": {"tarpit": {"max_delay": 20, "adaptive": False},
+                           "detection": {"trap_threshold": 80}}}
+        response, data = await self.call("POST", "/api/v1/settings", body, headers)
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(data["level"], 0)
+        self.assertEqual(self.config.tarpit.max_delay, 20.0)
+        self.assertFalse(self.config.tarpit.adaptive)
+        self.assertEqual(self.config.detection.trap_threshold, 80.0)
+
+    async def test_bad_or_forbidden_changes_are_refused_and_change_nothing(self):
+        headers = await self.login()
+        for body, text in (
+            ({"level": 9}, "level must be 1-5"),
+            ({"level": "high"}, "level must be 1-5"),
+            ({"values": {"tarpit": {"base_delay": 999}}}, "tarpit.base_delay"),
+            ({"values": {"tarpit": {"max_delay": 0.2}}}, "tarpit.max_delay"),
+            ({"values": {"tarpit": {"max_sessions": 1.5}}}, "whole number"),
+            ({"values": {"detection": {"medium_threshold": 90}}}, "thresholds"),
+            ({"values": {"dashboard": {"host": "0.0.0.0"}}}, "unknown settings section"),
+            ({"values": {"public": {"upstream": "http://other.example"}}}, "unknown settings section"),
+            ({"values": {"tarpit": {"buffer_bytes": 1}}}, "cannot be changed here"),
+            ({"values": []}, "values must be an object"),
+            ({}, "nothing to change"),
+        ):
+            response, data = await self.call("POST", "/api/v1/settings", body, headers)
+            self.assertEqual(response.status, 400, body)
+            self.assertIn(text, data["error"])
+        self.assertEqual(self.applied, [])
+        self.assertEqual(self.config.tarpit.base_delay, 1.0)
+        self.assertEqual(self.config.dashboard.host, "127.0.0.1")
+
+    async def test_settings_change_needs_the_csrf_token(self):
+        await self.login()
+        response, _ = await self.call("POST", "/api/v1/settings", {"level": 5}, POST)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(self.config.tarpit.level, 3)
+
+
+class Timeline(DashboardCase):
+    async def test_timeline_lists_a_sessions_events_oldest_first(self):
+        await self.login()
+        session = self.trap_someone()
+        other = request("/.env", headers={"Host": "x.example", "User-Agent": "Mozilla/5.0 Chrome/1"},
+                        ip="198.51.100.9")
+        self.engine.finish(other, self.engine.begin(other), 404, "")
+        self.store.flush()
+        response, data = await self.call(
+            "GET", "/api/v1/sessions/timeline", params={"key": session.key})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["session"]["key"], session.key)
+        self.assertEqual(data["session"]["groups"], ["client", "hidden_path"])
+        self.assertFalse(data["truncated"])
+        events = data["events"]
+        self.assertGreaterEqual(len(events), 3)
+        self.assertEqual([e["id"] for e in events], sorted(e["id"] for e in events))
+        self.assertTrue(all(e["session"] == session.key for e in events))
+
+    async def test_unknown_session_has_no_timeline(self):
+        await self.login()
+        response, _ = await self.call("GET", "/api/v1/sessions/timeline", params={"key": "nobody"})
+        self.assertEqual(response.status, 404)
+        response, _ = await self.call("GET", "/api/v1/sessions/timeline")
+        self.assertEqual(response.status, 404)

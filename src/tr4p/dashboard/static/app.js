@@ -10,6 +10,7 @@
   const sessionsBody = el("sessions");
   let csrf = "";
   let sessionsTimer = null;
+  let timelineKey = null;
 
   function node(tag, className, text) {
     const item = document.createElement(tag);
@@ -54,7 +55,14 @@
       window.location.replace("/login");
       throw new Error("signed out");
     }
-    if (!response.ok) { throw new Error("request failed: " + response.status); }
+    if (!response.ok) {
+      let message = "request failed: " + response.status;
+      try {
+        const data = await response.json();
+        if (data && typeof data.error === "string") { message = data.error; }
+      } catch (ignored) { /* keep the generic message */ }
+      throw new Error(message);
+    }
     return response.json();
   }
 
@@ -79,6 +87,14 @@
     el("c-high").textContent = tiers.high || 0;
     el("c-flagged").textContent = (tiers.low || 0) + (tiers.medium || 0) + (tiers.high || 0);
     el("c-tracked").textContent = (stats.tracked_sessions || 0).toLocaleString();
+    const pit = status.tarpit || {};
+    el("c-held").textContent = (pit.held || 0).toLocaleString();
+    el("c-held-note").textContent =
+      (pit.sessions || 0) + " sessions · " + (pit.dropped || 0) + " dropped · " +
+      (pit.abandoned || 0) + " gave up";
+    el("c-burned").textContent = duration(pit.burned_seconds || 0);
+    el("c-burned-note").textContent = (stats.delayed || 0).toLocaleString() + " delayed requests";
+    if (typeof status.level === "number" && !formDirty) { showLevel(status.level); }
     el("c-mode").textContent = status.mode === "proxy" ? "Reverse proxy" : "Standalone";
     if (status.canary) {
       el("c-rotation").textContent = "Canaries rotate in " + duration(status.canary.next_rotation_in);
@@ -101,6 +117,7 @@
     what.appendChild(document.createTextNode(" " + (event.detail || "")));
     row.appendChild(what);
 
+    if (event.kind === "system") { return row; }   // operator actions have no request behind them
     const meta = node("div", "meta");
     if (event.path) {
       meta.appendChild(node("span", "path", (event.method ? event.method + " " : "") + event.path));
@@ -136,13 +153,20 @@
     const row = node("tr");
     const tier = session.released ? "released" : session.tier;
     row.appendChild(node("td")).appendChild(node("span", "tier tier-" + tier, tier));
+    if (session.key === timelineKey) { row.className = "selected"; }
     row.appendChild(node("td", "num", Math.round(session.score)));
+    row.appendChild(node("td", "num", session.phase || 0));
     row.appendChild(node("td", "", session.ip || "-"));
 
     const chips = node("div", "chips");
     Object.keys(session.signals || {}).sort().forEach(function (name) {
       const count = session.signals[name];
       chips.appendChild(node("span", "chip", count > 1 ? name + " ×" + count : name));
+    });
+    Object.keys(session.inherited || {}).sort().forEach(function (name) {
+      const chip = node("span", "chip", name + " (inherited)");
+      chip.title = "Carried over from a session with the same address and header fingerprint";
+      chips.appendChild(chip);
     });
     row.appendChild(node("td")).appendChild(chips);
 
@@ -163,9 +187,117 @@
         button.disabled = false;
       }
     });
-    row.appendChild(node("td")).appendChild(button);
+    const history = node("button", "ghost", "Timeline");
+    history.type = "button";
+    history.addEventListener("click", function () { showTimeline(session.key); });
+    const actions = node("div", "row-actions");
+    actions.appendChild(history);
+    actions.appendChild(button);
+    row.appendChild(node("td")).appendChild(actions);
     return row;
   }
+
+  // ---------------------------------------------------------------- timeline
+
+  async function showTimeline(key) {
+    timelineKey = key;
+    const list = el("timeline");
+    let data;
+    try {
+      data = await api("/api/v1/sessions/timeline?key=" + encodeURIComponent(key));
+    } catch (error) {
+      hideTimeline();
+      return;
+    }
+    const session = data.session;
+    el("timeline-summary").textContent =
+      (session.ip || "-") + " · tier " + (session.released ? "released" : session.tier) +
+      " · score " + Math.round(session.score) + " · phase " + (session.phase || 0) +
+      " · " + session.requests + " requests · first seen " + ago(session.created) +
+      (data.truncated ? " · showing the latest " + data.events.length + " events" : "");
+    list.replaceChildren.apply(list, data.events.map(feedRow));
+    el("timeline-empty").hidden = data.events.length > 0;
+    el("timeline-panel").hidden = false;
+    el("timeline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    loadSessions().catch(function () { /* ignored */ });
+  }
+
+  function hideTimeline() {
+    timelineKey = null;
+    el("timeline-panel").hidden = true;
+    loadSessions().catch(function () { /* ignored */ });
+  }
+
+  // ---------------------------------------------------------------- settings
+
+  let presets = {};
+  let formDirty = false;
+
+  function showLevel(level) {
+    document.querySelectorAll("#levels .level").forEach(function (button) {
+      button.setAttribute("aria-pressed", String(Number(button.dataset.level) === level));
+    });
+    const preset = presets[String(level)];
+    el("level-note").textContent = preset
+      ? "Delays start at " + preset.base_delay + " s and double up to " + preset.max_delay +
+        " s (medium tier: up to " + preset.light_max_delay + " s)."
+      : (level === 0 ? "Custom values are in use (see advanced settings)." : "");
+  }
+
+  function fillSettings(data) {
+    presets = data.presets || {};
+    showLevel(data.level);
+    document.querySelectorAll("#settings-form [name]").forEach(function (input) {
+      const parts = input.name.split(".");
+      const value = (data.values[parts[0]] || {})[parts[1]];
+      if (input.type === "checkbox") { input.checked = Boolean(value); } else { input.value = value; }
+    });
+    formDirty = false;
+  }
+
+  function settingsMessage(kind, text) {
+    const message = el("settings-message");
+    message.dataset.kind = kind;
+    message.textContent = text;
+  }
+
+  async function loadSettings() {
+    fillSettings(await api("/api/v1/settings"));
+  }
+
+  document.querySelectorAll("#levels .level").forEach(function (button) {
+    button.addEventListener("click", async function () {
+      try {
+        fillSettings(await api("/api/v1/settings", { level: Number(button.dataset.level) }));
+        settingsMessage("ok", "Level " + button.dataset.level + " is active.");
+      } catch (error) {
+        settingsMessage("error", error.message);
+      }
+    });
+  });
+
+  el("settings-form").addEventListener("input", function () { formDirty = true; });
+  el("settings-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    const values = {};
+    document.querySelectorAll("#settings-form [name]").forEach(function (input) {
+      const parts = input.name.split(".");
+      values[parts[0]] = values[parts[0]] || {};
+      if (input.type === "checkbox") {
+        values[parts[0]][parts[1]] = input.checked;
+      } else if (input.step === "1") {
+        values[parts[0]][parts[1]] = parseInt(input.value, 10);
+      } else {
+        values[parts[0]][parts[1]] = parseFloat(input.value);
+      }
+    });
+    try {
+      fillSettings(await api("/api/v1/settings", { values: values }));
+      settingsMessage("ok", "Saved.");
+    } catch (error) {
+      settingsMessage("error", error.message);
+    }
+  });
 
   async function loadSessions() {
     const data = await api("/api/v1/sessions");
@@ -212,6 +344,7 @@
     history.events.forEach(function (event) { addEvent(event, false); });
     applyFilter();
     await loadSessions();
+    await loadSettings();
     connect();
     window.setInterval(function () {
       loadSessions().catch(function () { /* ignored */ });
@@ -219,6 +352,7 @@
   }
 
   el("alerts-only").addEventListener("change", applyFilter);
+  el("timeline-close").addEventListener("click", hideTimeline);
   el("logout").addEventListener("click", async function () {
     try { await api("/api/v1/logout", {}); } catch (error) { /* signing out anyway */ }
     window.location.replace("/login");

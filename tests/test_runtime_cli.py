@@ -102,6 +102,19 @@ class RuntimeCase(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(response.status, 200)
                 status = runtime.status()
                 self.assertTrue(status["running"])
+                self.assertEqual(status["level"], 3)
+                self.assertEqual(status["tarpit"]["completed"], 1)      # the probe was held
+                self.assertEqual(status["connections"]["limit"], 4096)
+                config.public.port = runtime.public.port
+                config.dashboard.port = runtime.dashboard.port
+                await runtime.apply_settings({"tarpit": {"max_delay": 20.0}}, "test change")
+                self.assertEqual(runtime.config.tarpit.level, 0)       # custom now
+                from tr4p.config import Config as Saved
+                self.assertEqual(Saved.load(home / "config.json").tarpit.max_delay, 20.0)
+                from tr4p.config import ConfigError
+                with self.assertRaises(ConfigError):
+                    await runtime.apply_settings({"tarpit": {"max_delay": -1.0}}, "bad")
+                self.assertEqual(runtime.config.tarpit.max_delay, 20.0)
                 self.assertEqual(status["stats"]["tiers"]["medium"], 1)
                 self.assertGreater(status["canary"]["next_rotation_in"], 0)
                 json.dumps(status)                           # must be serialisable
@@ -110,6 +123,7 @@ class RuntimeCase(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(runtime.running)
             self.assertTrue(is_private(home / "events.db"))
 
+            config.public.port = config.dashboard.port = 0
             again = Runtime(home, config, seed)
             await again.start()
             try:

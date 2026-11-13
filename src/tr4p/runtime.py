@@ -14,6 +14,7 @@ from tr4p.config import CONFIG_FILE, DATABASE_FILE, SEED_FILE, Config
 from tr4p.crawlers import CrawlerVerifier
 from tr4p.dashboard.app import Dashboard
 from tr4p.engine import Engine
+from tr4p.levels import level_of
 from tr4p.persona import Persona
 from tr4p.public import PublicApp
 from tr4p.seed import Seed
@@ -54,6 +55,7 @@ class Runtime:
             config, self.engine, self.store, self.bus,
             instance_id=seed.hex("instance-id", length=16),
             status=self.status,
+            apply_settings=self.apply_settings,
         )
         self._crawlers = CrawlerVerifier()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -99,12 +101,27 @@ class Runtime:
             "uptime": now - self._started if self._started else 0.0,
             "public": {"host": self.config.public.host, "port": self.public.port},
             "stats": self.engine.stats(),
+            "tarpit": self.public.tarpit.stats(),
+            "level": level_of(self.config),
+            "connections": {
+                "open": self.public.open_connections,
+                "limit": self.config.public.max_connections,
+                "refused": self.public.refused_connections,
+            },
             "dropped_events": self.store.dropped,
             "canary": {
                 "rotation": canaries.rotation(),
                 "next_rotation_in": period - (now % period),
             },
         }
+
+    async def apply_settings(self, changes: dict[str, Any], note: str) -> None:
+        """Change settings while running and keep them across restarts.
+        Raises ConfigError (changing nothing) if a value is not acceptable."""
+        self.config.apply(changes)
+        self.config.tarpit.level = level_of(self.config)
+        await asyncio.to_thread(self.config.save, self.home / CONFIG_FILE)
+        self.engine.system_event(note)
 
     def _spawn(self, coroutine) -> None:
         task = asyncio.ensure_future(coroutine)

@@ -30,7 +30,7 @@ from aiohttp import web
 
 from tr4p import __version__, scoring
 from tr4p.bus import EventBus
-from tr4p.config import Config
+from tr4p.config import Config, ConfigError
 from tr4p.dashboard.auth import (
     LoginLimiter,
     SessionStore,
@@ -40,6 +40,7 @@ from tr4p.dashboard.auth import (
     verify_password,
 )
 from tr4p.engine import Engine
+from tr4p.levels import PRESETS, level_of, preset_changes
 from tr4p.store import Store
 
 log = logging.getLogger("tr4p.dashboard")
@@ -79,6 +80,14 @@ _OPEN_PATHS = frozenset({
 })
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 
+# The only settings the dashboard may change, by config section.
+EDITABLE = {
+    "tarpit": ("enabled", "adaptive", "base_delay", "max_delay", "light_max_delay",
+               "max_sessions"),
+    "detection": ("medium_threshold", "trap_threshold"),
+}
+TIMELINE_LIMIT = 500
+
 
 def _asset(name: str) -> bytes:
     return (resources.files("tr4p.dashboard") / "static" / name).read_bytes()
@@ -93,6 +102,7 @@ class Dashboard:
         bus: EventBus,
         instance_id: str,
         status: Callable[[], dict[str, Any]],
+        apply_settings: Callable[[dict[str, Any], str], Awaitable[None]] | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
@@ -100,6 +110,7 @@ class Dashboard:
         self._bus = bus
         self._instance_id = instance_id
         self._status = status
+        self._apply_settings = apply_settings
         self._sessions = SessionStore(config.dashboard.session_hours * 3600.0)
         self._limiter = LoginLimiter()
         self._streams = 0
@@ -133,6 +144,9 @@ class Dashboard:
         add.add_get("/api/v1/events", self._api_events)
         add.add_get("/api/v1/sessions", self._api_sessions)
         add.add_post("/api/v1/sessions/release", self._api_release)
+        add.add_get("/api/v1/sessions/timeline", self._api_timeline)
+        add.add_get("/api/v1/settings", self._api_settings)
+        add.add_post("/api/v1/settings", self._api_settings_update)
         add.add_get("/api/v1/stream", self._api_stream)
         return app
 
@@ -355,6 +369,66 @@ class Dashboard:
         if not key or not self._engine.release(key, released):
             return _json({"error": "unknown session"}, 404)
         return _json({"ok": True, "released": released})
+
+    async def _api_timeline(self, request: web.Request) -> web.StreamResponse:
+        """Everything recorded about one session, oldest first."""
+        key = request.query.get("key", "")[:80]
+        session = self._engine.sessions.get(key) if key else None
+        if session is None:
+            return _json({"error": "unknown session"}, 404)
+        events = await self._store.events_async(limit=TIMELINE_LIMIT, session=key)
+        events.reverse()
+        row = session.snapshot()
+        row["groups"] = sorted(scoring.evidence_groups(session.signals))
+        return _json({"instance": self._instance(), "session": row, "events": events,
+                      "truncated": len(events) >= TIMELINE_LIMIT})
+
+    # ----------------------------------------------------------------- settings
+
+    def _settings_payload(self) -> dict[str, Any]:
+        values = {
+            section: {name: getattr(getattr(self._config, section), name) for name in names}
+            for section, names in EDITABLE.items()
+        }
+        return {
+            "instance": self._instance(),
+            "level": level_of(self._config),
+            "presets": {str(level): preset for level, preset in PRESETS.items()},
+            "values": values,
+        }
+
+    async def _api_settings(self, request: web.Request) -> web.StreamResponse:
+        return _json(self._settings_payload())
+
+    async def _api_settings_update(self, request: web.Request) -> web.StreamResponse:
+        if self._apply_settings is None:
+            return _json({"error": "settings cannot be changed here"}, 409)
+        data = await _read_json(request)
+        changes: dict[str, dict[str, Any]] = {}
+        note = "settings changed"
+        if "level" in data:
+            try:
+                changes = preset_changes(int(data["level"]))
+            except (TypeError, ValueError):
+                return _json({"error": "level must be 1-5"}, 400)
+            note = f"tiring level set to {data['level']}"
+        values = data.get("values", {})
+        if not isinstance(values, dict):
+            return _json({"error": "values must be an object"}, 400)
+        for section, entries in values.items():
+            if section not in EDITABLE or not isinstance(entries, dict):
+                return _json({"error": f"unknown settings section: {section}"}, 400)
+            for name, value in entries.items():
+                if name not in EDITABLE[section]:
+                    return _json({"error": f"{section}.{name} cannot be changed here"}, 400)
+                changes.setdefault(section, {})[name] = value
+        if not changes:
+            return _json({"error": "nothing to change"}, 400)
+        try:
+            await self._apply_settings(changes, note)
+        except ConfigError as exc:
+            return _json({"error": str(exc)}, 400)
+        return _json(self._settings_payload())
 
     async def _api_stream(self, request: web.Request) -> web.StreamResponse:
         """Server-sent events: live activity plus a status tick."""
