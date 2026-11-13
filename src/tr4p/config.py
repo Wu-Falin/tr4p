@@ -23,6 +23,7 @@ DATABASE_FILE = "events.db"
 
 MODES = ("proxy", "standalone")
 COOKIE_MODES = ("always", "on_signal")
+DECOY_PROFILES = ("generic", "php", "wordpress", "api")
 
 # Default weight of each signal type on the 0-100 confidence scale.
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -209,6 +210,16 @@ class BlockConfig:
 
 
 @dataclass
+class DecoyConfig:
+    """Emulated application that high-tier sessions are quietly moved to."""
+
+    enabled: bool = True
+    # generic, php, wordpress or api
+    profile: str = "generic"
+    timeout: float = 5.0
+
+
+@dataclass
 class StorageConfig:
     max_events: int = 200000
 
@@ -227,6 +238,7 @@ class Config:
     maze: MazeConfig = field(default_factory=MazeConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
     block: BlockConfig = field(default_factory=BlockConfig)
+    decoy: DecoyConfig = field(default_factory=DecoyConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     # Addresses or networks that bypass detection (your own pentest hosts).
     whitelist: list[str] = field(default_factory=list)
@@ -364,6 +376,9 @@ class Config:
         _require(alerts.dedupe_minutes >= 0, "alerts.dedupe_minutes must be >= 0")
         _require(block.ttl_hours > 0, "block.ttl_hours must be positive")
         _require(10 <= block.max_entries <= 100000, "block.max_entries must be 10-100000")
+        _require(self.decoy.profile in DECOY_PROFILES,
+                 f"decoy.profile must be one of {DECOY_PROFILES}")
+        _require(1 <= self.decoy.timeout <= 30, "decoy.timeout must be 1-30 seconds")
         _require(self.storage.max_events >= 1000, "storage.max_events must be >= 1000")
         _require(dash.session_hours > 0, "dashboard.session_hours must be positive")
         parse_networks(self.whitelist, "whitelist")
