@@ -38,6 +38,8 @@ class Loot:
     content_type: str
     body: bytes
     static_file: bool = False   # served with file-like headers
+    location: str = ""          # set for redirects
+    request_id: str = ""        # set when the answer was varied per request
 
 
 class LootFactory:
@@ -45,8 +47,10 @@ class LootFactory:
         self._seed = seed
         self._tokens = honeytokens
         self._persona = persona
+        # Where bait files say the admin area is. Set by the maze.
+        self.admin_path = lambda: ""
 
-    def render(self, path: str, host: str) -> Loot | None:
+    def render(self, path: str, host: str, allow_dirs: bool = True) -> Loot | None:
         """Return bait for a path, or None to answer "forbidden"."""
         domain = host.split(":")[0] or "localhost"
         name = path.rsplit("/", 1)[-1]
@@ -56,7 +60,7 @@ class LootFactory:
         if lowered.endswith(_BINARY_ENDINGS):
             return None
         if path.endswith("/") or "." not in name:
-            return Loot(200, "text/html", self._index(path, rng))
+            return Loot(200, "text/html", self._index(path, rng, allow_dirs))
         if lowered.endswith("/.git/config"):
             return self._file(self._git_config(domain))
         if lowered.endswith("/.git/head"):
@@ -149,6 +153,7 @@ class LootFactory:
             "AWS_DEFAULT_REGION=eu-west-1\n\n"
             f"JWT_SECRET={tokens.value('jwt_secret')}\n"
             f"API_KEY={tokens.value('api_key')}\n"
+            + (f"ADMIN_URL={self.admin_path()}\n" if self.admin_path() else "")
         )
 
     def _git_config(self, domain: str) -> str:
@@ -215,14 +220,15 @@ class LootFactory:
         login = self._people(domain, rng, 1)[0][0]
         return (
             "handover notes\n==============\n\n"
-            f"- admin login: admin / {self._tokens.value('admin_password')}\n"
+            f"- admin login: admin / {self._tokens.value('admin_password')}"
+            f"{' at ' + self.admin_path() if self.admin_path() else ''}\n"
             f"- api key for the reporting job: {self._tokens.value('api_key')}\n"
             f"- db user {self._slug()}_app, password {self._tokens.value('db_password')}\n"
             f"- ask {login} before touching the old export scripts\n"
             "- rotate everything after the migration (still not done)\n"
         )
 
-    def _index(self, path: str, rng) -> bytes:
+    def _index(self, path: str, rng, allow_dirs: bool = True) -> bytes:
         """A directory listing in the style of the persona's web server."""
         directory = path if path.endswith("/") else path + "/"
         entries = []
@@ -232,7 +238,7 @@ class LootFactory:
             if rng.random() < 0.4:
                 name = f"{name}-{2019 + rng.randrange(7)}"
             name += rng.choice(_ENDINGS)
-            if name in seen:
+            if name in seen or (name.endswith("/") and not allow_dirs):
                 continue
             seen.add(name)
             stamp = (f"{rng.randrange(1, 29):02d}-{rng.choice(_MONTHS)}-{2022 + rng.randrange(4)} "

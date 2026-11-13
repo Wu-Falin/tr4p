@@ -43,6 +43,7 @@ _NAME_TAILS = (
 )
 
 _REASONS = {
+    302: "Found",
     400: "Bad Request",
     401: "Unauthorized",
     403: "Forbidden",

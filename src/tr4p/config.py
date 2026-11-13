@@ -162,6 +162,53 @@ class TarpitConfig:
 
 
 @dataclass
+class MazeConfig:
+    """Rabbit hole, token-burn pages and teleport. Canary territory only."""
+
+    # How many directory levels the fake file tree goes down.
+    rabbit_depth: int = 4
+    # Size of a long fake page for a trapped session (hard cap 512 KiB).
+    burn_bytes: int = 32768
+    # Chance that a high-tier request is redirected into the maze.
+    redirect_chance: float = 0.02
+    redirect_min_phase: int = 2
+    # Optional outside targets. Empty means the built-in maze is used.
+    external_targets: list[str] = field(default_factory=list)
+    # Vary request ids, ordering and formatting between answers.
+    mutate: bool = True
+
+
+@dataclass
+class AlertConfig:
+    min_tier: str = "high"
+    webhook_url: str = ""
+    # Webhooks to private or loopback addresses are refused unless this is set.
+    webhook_allow_private: bool = False
+    webhook_timeout: float = 5.0
+    email_to: list[str] = field(default_factory=list)
+    email_from: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_security: str = "starttls"
+    rate_per_minute: int = 6
+    dedupe_minutes: float = 10.0
+
+
+@dataclass
+class BlockConfig:
+    """Address-and-fingerprint entries for high-tier sessions."""
+
+    # Refuse listed clients outright. Off by default: holding them in the
+    # tarpit costs them more and tells them less.
+    enforce: bool = False
+    # Keep blocklist.txt in the home directory for other tools to read.
+    export: bool = True
+    ttl_hours: float = 24.0
+    max_entries: int = 5000
+
+
+@dataclass
 class StorageConfig:
     max_events: int = 200000
 
@@ -177,6 +224,9 @@ class Config:
     inject: InjectConfig = field(default_factory=InjectConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
     tarpit: TarpitConfig = field(default_factory=TarpitConfig)
+    maze: MazeConfig = field(default_factory=MazeConfig)
+    alerts: AlertConfig = field(default_factory=AlertConfig)
+    block: BlockConfig = field(default_factory=BlockConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     # Addresses or networks that bypass detection (your own pentest hosts).
     whitelist: list[str] = field(default_factory=list)
@@ -294,6 +344,26 @@ class Config:
         _require(0 <= pit.session_queue <= 64, "tarpit.session_queue must be 0-64")
         _require(pit.buffer_bytes >= 0, "tarpit.buffer_bytes must be >= 0")
         _require(pit.buffer_total_bytes >= 0, "tarpit.buffer_total_bytes must be >= 0")
+        maze, alerts, block = self.maze, self.alerts, self.block
+        _require(1 <= maze.rabbit_depth <= 12, "maze.rabbit_depth must be 1-12")
+        _require(1024 <= maze.burn_bytes <= 512 * 1024, "maze.burn_bytes must be 1024-524288")
+        _require(0 <= maze.redirect_chance <= 1, "maze.redirect_chance must be 0-1")
+        _require(0 <= maze.redirect_min_phase <= 40, "maze.redirect_min_phase must be 0-40")
+        for target in maze.external_targets:
+            _require(_is_http_url(target), f"maze.external_targets: {target!r} is not an http(s) URL")
+        _require(alerts.min_tier in ("medium", "high"), "alerts.min_tier must be medium or high")
+        _require(not alerts.webhook_url or _is_http_url(alerts.webhook_url),
+                 "alerts.webhook_url must be an http(s) URL")
+        _require(1 <= alerts.webhook_timeout <= 30, "alerts.webhook_timeout must be 1-30 seconds")
+        _require(alerts.smtp_security in ("starttls", "ssl", "none"),
+                 "alerts.smtp_security must be starttls, ssl or none")
+        _require(1 <= alerts.smtp_port <= 65535, "alerts.smtp_port must be 1-65535")
+        _require(all("@" in item and " " not in item for item in alerts.email_to),
+                 "alerts.email_to must be a list of e-mail addresses")
+        _require(1 <= alerts.rate_per_minute <= 60, "alerts.rate_per_minute must be 1-60")
+        _require(alerts.dedupe_minutes >= 0, "alerts.dedupe_minutes must be >= 0")
+        _require(block.ttl_hours > 0, "block.ttl_hours must be positive")
+        _require(10 <= block.max_entries <= 100000, "block.max_entries must be 10-100000")
         _require(self.storage.max_events >= 1000, "storage.max_events must be >= 1000")
         _require(dash.session_hours > 0, "dashboard.session_hours must be positive")
         parse_networks(self.whitelist, "whitelist")
@@ -309,6 +379,11 @@ def parse_networks(entries: list[str], name: str) -> list[ipaddress._BaseNetwork
         except ValueError as exc:
             raise ConfigError(f"{name}: {entry!r} is not an IP address or network") from exc
     return networks
+
+
+def _is_http_url(value: str) -> bool:
+    parts = urlsplit(value)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
 
 
 def _require(condition: bool, message: str) -> None:
