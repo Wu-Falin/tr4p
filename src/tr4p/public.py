@@ -29,6 +29,7 @@ from tr4p.config import Config, parse_networks
 from tr4p.engine import Engine, RequestInfo, Verdict
 from tr4p.inject import build_snippet, can_inject, inject, merge_robots
 from tr4p.loot import Loot, LootFactory
+from tr4p.maze import Maze
 from tr4p.persona import Persona, reason_phrase
 from tr4p.proxy import Upstream, UpstreamError, response_headers
 from tr4p.seed import Seed
@@ -52,6 +53,7 @@ _LEARN_LIMIT = 64 * 1024
 _INTEGRITY_HEADERS = ("Content-Length", "Content-MD5", "Digest", "Accept-Ranges")
 _GZIP_MIN_BYTES = 512
 _GZIP_INLINE_BYTES = 64 * 1024
+_GZIP_MAX_OWN_BYTES = 256 * 1024
 
 
 class PublicApp:
@@ -71,6 +73,7 @@ class PublicApp:
         self.refused_connections = 0
         self._trusted = parse_networks(config.public.trusted_proxies, "public.trusted_proxies")
         self._loot = LootFactory(seed, engine.honeytokens, persona)
+        self._maze = Maze(seed, config, engine.canaries, engine.honeytokens, persona, self._loot)
         self._upstream: Upstream | None = None
         self._site: BuiltinSite | None = None
         if config.public.mode == "proxy":
@@ -179,6 +182,8 @@ class PublicApp:
             is_asset=is_asset_request(path, headers),
         )
         verdict = self._engine.begin(info)
+        if verdict.blocked:
+            return self._error(request, 403)
         cookie = self._cookie_header(verdict, secure)
 
         if verdict.delay > 0 and verdict.session is not None:
@@ -204,6 +209,10 @@ class PublicApp:
         """Produce the answer. With held=True (a trapped session) small
         answers are returned unsent, so the tarpit can drip them out."""
         path = info.path
+        if verdict.teleport:
+            self._engine.finish(info, verdict, 302, "")
+            return self._loot_response(
+                request, Loot(302, "text/html", b"", location=self._maze.teleport_target()), cookie)
         if verdict.canary is not None:
             loot = self._canary_loot(request, info, verdict)
             status = loot.status if loot else 403
@@ -515,19 +524,28 @@ class PublicApp:
     # ---------------------------------------------------------------- responses
 
     def _canary_loot(self, request, info: RequestInfo, verdict: Verdict) -> Loot | None:
-        current = self._engine.canaries.current()
-        if info.path == current.instruction_path:
-            return self._loot.agent_notice(current)
-        return self._loot.render(info.path, request.host)
+        session = verdict.session
+        return self._maze.respond(
+            request.method, info.path, info.query, info.body, request.host,
+            session.key if session else "", verdict.delay > 0,
+        )
 
     def _loot_response(self, request, loot: Loot | None, cookie: str | None) -> web.StreamResponse:
         if loot is None:
             return self._error(request, 403, cookie)
-        extra = None
-        if loot.static_file:
-            stamp, etag = self._loot.file_headers(request.path, len(loot.body))
+        extra: dict[str, str] = {}
+        body = loot.body
+        if loot.location:
+            extra["Location"] = loot.location
+            body = self._persona.error_page(302)[1]
+        elif loot.static_file:
+            stamp, etag = self._loot.file_headers(request.path, len(body))
             extra = {"Last-Modified": stamp, "ETag": etag, "Accept-Ranges": "bytes"}
-        return self._own(request, loot.status, loot.content_type, loot.body, cookie, extra)
+        if loot.request_id:
+            extra["X-Request-Id"] = loot.request_id
+            extra["Cache-Control"] = "no-store"
+        return self._own(request, loot.status, loot.content_type, body, cookie, extra,
+                         compress=len(body) <= _GZIP_MAX_OWN_BYTES)
 
     def _error(self, request, status: int, cookie: str | None = None) -> web.StreamResponse:
         content_type, body = self._persona.error_page(status, request.headers.get("host", ""))

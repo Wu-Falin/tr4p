@@ -93,7 +93,12 @@
       (pit.sessions || 0) + " sessions · " + (pit.dropped || 0) + " dropped · " +
       (pit.abandoned || 0) + " gave up";
     el("c-burned").textContent = duration(pit.burned_seconds || 0);
-    el("c-burned-note").textContent = (stats.delayed || 0).toLocaleString() + " delayed requests";
+    el("c-burned-note").textContent = (stats.delayed || 0).toLocaleString() + " delayed \u00b7 " +
+      (stats.teleported || 0) + " redirected \u00b7 " + (stats.blocklist || 0) + " on blocklist";
+    const notices = status.alerts || {};
+    el("c-alerts-note").textContent = notices.configured
+      ? notices.sent + " sent \u00b7 " + notices.suppressed + " held back \u00b7 " + notices.failed + " failed"
+      : "no webhook or e-mail set";
     if (typeof status.level === "number" && !formDirty) { showLevel(status.level); }
     el("c-mode").textContent = status.mode === "proxy" ? "Reverse proxy" : "Standalone";
     if (status.canary) {
@@ -239,8 +244,11 @@
     });
     const preset = presets[String(level)];
     el("level-note").textContent = preset
-      ? "Delays start at " + preset.base_delay + " s and double up to " + preset.max_delay +
-        " s (medium tier: up to " + preset.light_max_delay + " s)."
+      ? "Delays start at " + preset.tarpit.base_delay + " s and double up to " +
+        preset.tarpit.max_delay + " s (medium tier: up to " + preset.tarpit.light_max_delay +
+        " s). Rabbit hole " + preset.maze.rabbit_depth + " levels deep, long pages up to " +
+        Math.round(preset.maze.burn_bytes / 1024) + " KB, redirect chance " +
+        Math.round(preset.maze.redirect_chance * 100) + "%."
       : (level === 0 ? "Custom values are in use (see advanced settings)." : "");
   }
 

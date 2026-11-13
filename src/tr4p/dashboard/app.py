@@ -85,6 +85,7 @@ EDITABLE = {
     "tarpit": ("enabled", "adaptive", "base_delay", "max_delay", "light_max_delay",
                "max_sessions"),
     "detection": ("medium_threshold", "trap_threshold"),
+    "maze": ("rabbit_depth", "redirect_chance"),
 }
 TIMELINE_LIMIT = 500
 

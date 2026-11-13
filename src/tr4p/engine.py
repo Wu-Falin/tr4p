@@ -34,6 +34,7 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import parse_qsl, unquote_plus
 
 from tr4p import scoring
+from tr4p.blocklist import Blocklist
 from tr4p.canary import (
     KIND_INSTRUCTION,
     KIND_ROBOTS,
@@ -106,6 +107,8 @@ class Verdict:
     bait: str | None = None
     tier: str = scoring.TIER_NONE
     delay: float = 0.0      # seconds to hold the answer back (0 = not trapped)
+    blocked: bool = False   # on the enforced blocklist: refuse
+    teleport: bool = False  # redirect this request into the maze
 
 
 class Sink(Protocol):
@@ -123,6 +126,8 @@ class Counters:
     alerts: int = 0
     delayed: int = 0
     expired: int = 0
+    blocked: int = 0
+    teleported: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
 
 
@@ -145,6 +150,7 @@ class Engine:
         )
         self.honeytokens = Honeytokens(seed)
         self.whitelist = Whitelist(config.whitelist)
+        self.blocklist = Blocklist(config.block, clock)
         self.sessions = SessionTable(
             config.session.max_tracked,
             config.session.idle_seconds,
@@ -223,6 +229,19 @@ class Engine:
             f"{info.ip}|{client_print}".encode("utf-8", "replace")
         ).hexdigest()[:20]
 
+        entry = self.blocklist.hit(group_key)
+        if entry is not None:
+            self.counters.blocked += 1
+            if entry.hits == 1 or entry.hits % 100 == 0:
+                self._sink.event({
+                    "ts": now, "kind": "blocked", "session": group_key, "ip": info.ip,
+                    "method": info.method, "path": info.target[:PATH_LOG_LIMIT], "signal": "",
+                    "detail": f"refused, on the blocklist (x{entry.hits})", "score": 0.0,
+                    "tier": "high", "user_agent": info.headers.get("user-agent", "")[:AGENT_LOG_LIMIT],
+                    "alert": False,
+                })
+            return Verdict(blocked=True)
+
         ident: bytes | None = None
         token_phase = 0
         session: Session | None = None
@@ -260,6 +279,7 @@ class Engine:
                 # The cookie proves a later phase than we remember (restart).
                 session.phase = token_phase
             self._plan_delay(session, info, verdict, now)
+            self._plan_teleport(session, info, verdict)
 
         if ident is None:
             mode = self._config.session.cookie_mode
@@ -467,7 +487,8 @@ class Engine:
             count = session.signals[signal.type]
             if count <= LOG_FULL_UNTIL or count % LOG_EVERY == 0:
                 detail = signal.detail if count <= LOG_FULL_UNTIL else f"{signal.detail} (x{count})"
-                self._emit("signal", session, info, now, signal=signal.type, detail=detail)
+                self._emit("signal", session, info, now, signal=signal.type, detail=detail,
+                           alert=signal.type == "honeytoken")
 
         if scoring.TIER_RANK[session.tier] > scoring.TIER_RANK[previous_tier]:
             alert = session.tier in (scoring.TIER_MEDIUM, scoring.TIER_HIGH)
@@ -479,6 +500,7 @@ class Engine:
             )
             if alert:
                 self._link_group(session, now)
+        self._list_if_high(session)
         self._sink.session(session.snapshot())
 
     def _rescore(self, session: Session, allow_drop: bool = False) -> None:
@@ -499,6 +521,30 @@ class Engine:
         # a new request happened to look harmless.
         if allow_drop or scoring.TIER_RANK[tier] > scoring.TIER_RANK[session.tier]:
             session.tier = tier
+
+    def _list_if_high(self, session: Session) -> None:
+        """High tier only, and never while a crawler check is still open."""
+        if (
+            session.tier == scoring.TIER_HIGH
+            and not session.released
+            and session.crawler in ("", "unverified")
+        ):
+            self.blocklist.add(session.group_key or session.key, session.ip, session.fingerprint)
+
+    def _plan_teleport(self, session: Session, info: RequestInfo, verdict: Verdict) -> None:
+        maze = self._config.maze
+        if (
+            session.tier == scoring.TIER_HIGH
+            and maze.redirect_chance > 0
+            and session.phase >= maze.redirect_min_phase
+            and info.method == "GET"
+            and not info.is_asset
+            and verdict.canary is None
+            and verdict.bait is None
+            and self._random.random() < maze.redirect_chance
+        ):
+            verdict.teleport = True
+            self.counters.teleported += 1
 
     def _is_trapped(self, session: Session) -> bool:
         return (
@@ -642,9 +688,11 @@ class Engine:
         session.crawler = "verified" if verified else "unverified"
         if verified:
             session.tier = scoring.TIER_NONE
+            self.blocklist.remove(session.group_key or session.key)
             self._emit("system", session, None, now,
                        detail="verified search engine crawler, exempt from tiers")
         self._rescore(session)
+        self._list_if_high(session)
         self._sink.session(session.snapshot())
 
     # ------------------------------------------------------------------ control
@@ -666,8 +714,10 @@ class Engine:
             if released:
                 target.tier = scoring.TIER_NONE
                 target.phase = target.hits = 0
+                self.blocklist.remove(target.group_key or target.key)
             self.sessions.promote(target)
             self._rescore(target)
+            self._list_if_high(target)       # back on the list when re-armed
             self._sink.session(target.snapshot())
         self._emit(
             "release", session, None, now,
@@ -707,6 +757,9 @@ class Engine:
             "alerts": counters.alerts,
             "delayed": counters.delayed,
             "expired": counters.expired,
+            "blocked": counters.blocked,
+            "teleported": counters.teleported,
+            "blocklist": len(self.blocklist),
             "by_type": dict(counters.by_type),
             "tracked_sessions": len(self.sessions),
             "tiers": self.sessions.tier_counts(),

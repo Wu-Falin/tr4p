@@ -16,12 +16,12 @@ Work in progress.
 | --- | --- | --- |
 | 1 | Detection engine, canaries, event log, dashboard | done |
 | 2a | Escalating tarpit, session caps, tiring levels | done |
-| 2b | Token-burn pages, rabbit hole, fake kill chain, alerts | not started |
+| 2b | Token-burn pages, rabbit hole, fake kill chain, alerts | done |
 | 3 | Mirrored decoy | not started |
 | 4 | Docker, benchmarks, full documentation | not started |
 
-Right now TR4P **detects, records and slows down**. It does not reroute
-anyone to a decoy yet.
+Right now TR4P **detects, records, slows down and wastes effort** inside its
+own canary paths. It does not reroute anyone to a full decoy site yet.
 
 ## What it does today
 
@@ -77,6 +77,58 @@ Five tiring levels set how long the delays get:
 
 A level changes how hard trapped sessions are hit. It never changes who gets
 trapped: the score thresholds are separate settings.
+
+### Cost layers
+
+All of this lives under the hidden canary paths, so ordinary visitors never
+reach it. Every page is computed from the install seed and the path, nothing
+is stored per page, and every answer has a hard size cap.
+
+- **Rabbit hole.** Fake directory listings lead to more listings and files,
+  down to a configurable depth.
+- **Token-burn pages.** Long, plausible logs and wiki pages that cost an
+  automated reader time and context. Trapped sessions get the long version.
+- **Fake kill chain.** Bait files point to a fake admin area. The planted
+  credentials "work", and so does a classic injection string. Each step
+  after that takes twice as long as the one before. It is an emulation:
+  nothing an attacker sends is ever executed, evaluated, or passed to a
+  database, shell or file system. The "query console" matches a few fixed
+  shapes and prints canned text.
+- **Poisoned loot.** Every secret in bait is a honeytoken made up at run
+  time. Using one anywhere puts the session in the high tier at once.
+- **Mutation.** Dynamic pages vary request ids, key order and formatting on
+  every answer, so automation cannot cache them. Facts stay the same.
+- **Teleport.** High-tier requests are sometimes redirected into an endless
+  built-in maze. Outside targets can be configured; the list is empty by
+  default.
+
+The tiring level also sets rabbit-hole depth, long-page size and redirect
+chance. Depth and redirect chance can be changed in the dashboard.
+
+### Blocklist
+
+Clients confirmed in the high tier are listed as address plus header
+fingerprint, never either alone. Entries expire after 24 hours, and
+releasing a session removes its entry. Whitelisted addresses and verified
+crawlers are never listed.
+
+- Refusing listed clients (`block.enforce`) is off by default: holding them
+  in the tarpit costs them more and tells them less.
+- `blocklist.txt` in the home directory lists the addresses for tools such
+  as a firewall. **An address can be shared by many people** (offices,
+  mobile carriers, VPNs). Blocking by address alone can lock them out too.
+
+### Alerts
+
+Optional webhook (generic JSON) and e-mail, each off until configured.
+
+- Webhook targets must be http(s). Private and loopback addresses are
+  refused unless `alerts.webhook_allow_private` is set, and the check is made
+  on the address actually connected to. Redirects are not followed.
+- Alerts are de-duplicated and rate limited; held-back ones are counted.
+- Attacker-supplied text is cleaned before it is sent anywhere.
+- The SMTP password is never in the config file. Set `TR4P_SMTP_PASSWORD`
+  or put it in `smtp.secret` in the home directory.
 
 ### Staying cheap for the defender
 

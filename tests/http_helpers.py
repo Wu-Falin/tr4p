@@ -144,6 +144,7 @@ class ListenerCase(unittest.IsolatedAsyncioTestCase):
         self.config.public.mode = self.mode
         # Delays are covered by their own tests; elsewhere they only slow things down.
         self.config.tarpit.enabled = False
+        self.config.maze.redirect_chance = 0.0      # no random redirects unless a test asks
         self.upstream_runner = None
         if self.mode == "proxy":
             self.upstream_runner = web.AppRunner(fake_site(self.hits), access_log=None)
