@@ -256,6 +256,13 @@ class Tarpit:
         if not gate.holds and not gate.waiters and self._gates.get(key) is gate:
             del self._gates[key]
 
+    def drop_all(self) -> int:
+        """Let go of everything (used when the service stops)."""
+        count = 0
+        while self.drop_oldest():
+            count += 1
+        return count
+
     def drop_oldest(self) -> bool:
         """Drop every held connection of the longest-held session. Returns
         False when nothing is being held."""

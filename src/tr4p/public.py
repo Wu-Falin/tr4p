@@ -95,7 +95,7 @@ class PublicApp:
             keepalive_timeout=public.idle_timeout,
         )
         self._server = server
-        self._runner = web.ServerRunner(server, handle_signals=False)
+        self._runner = web.ServerRunner(server, handle_signals=False, shutdown_timeout=3.0)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._config.public.host, self._config.public.port)
         await site.start()
@@ -104,6 +104,7 @@ class PublicApp:
             self.port = addresses[0][1]
 
     async def stop(self) -> None:
+        self.tarpit.drop_all()       # held connections must not delay shutdown
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None
