@@ -10,17 +10,18 @@ and makes attacking a protected site slow and costly.
 
 ## Status
 
-Work in progress. This is phase 1 of 4.
+Work in progress.
 
 | Phase | What | State |
 | --- | --- | --- |
 | 1 | Detection engine, canaries, event log, dashboard | done |
-| 2 | Tarpit and other cost layers | not started |
+| 2a | Escalating tarpit, session caps, tiring levels | done |
+| 2b | Token-burn pages, rabbit hole, fake kill chain, alerts | not started |
 | 3 | Mirrored decoy | not started |
 | 4 | Docker, benchmarks, full documentation | not started |
 
-Right now TR4P **detects and records**. It does not slow down or reroute
-anyone yet.
+Right now TR4P **detects, records and slows down**. It does not reroute
+anyone to a decoy yet.
 
 ## What it does today
 
@@ -30,15 +31,16 @@ anyone yet.
   files such as `/.env`. All of it is derived from a per-install secret, so
   no two installs look alike, and it rotates on a schedule.
 - Scores each session from independent signals and sorts it into a tier.
-- Shows live activity in a local dashboard.
+- Holds back answers to trapped sessions, longer each time.
+- Shows live activity in a local dashboard, with a per-session timeline.
 
 ### How a session gets flagged
 
-| Tier | Needs | Meaning |
+| Tier | Needs | What happens |
 | --- | --- | --- |
 | low | any single signal | logged only, never acted on |
-| medium | two independent kinds of evidence | suspicious |
-| high | two kinds including a canary, or three kinds | confident |
+| medium | two independent kinds of evidence | light tarpit (short, capped delays; page assets are spared) |
+| high | two kinds including a canary, or three kinds | full tarpit |
 
 One signal never does more than log, however often it repeats. Signals that
 come from the same behaviour (for example speed and a burst of missing pages)
@@ -46,6 +48,53 @@ count as one kind of evidence. Sessions follow a signed cookie plus a header
 fingerprint, never an IP address alone, so people behind one NAT address are
 not lumped together. Verified search engine crawlers are exempt, and any
 session can be released from the dashboard with one click.
+
+Evidence does not last forever. A flagged session with no new signal for 24
+hours starts over. Evidence that reached a session only because it shares an
+address and header fingerprint with a trapped one counts for less, is
+forgotten after 30 minutes, and can never put that session in the high tier
+by itself.
+
+### The tarpit
+
+Answers to trapped sessions are held back: 1 s, 2 s, 4 s and so on up to a
+cap, with some randomness so the pattern is not a fixed number. Longer holds
+are sent as a slow drip, a small piece every couple of seconds with the last
+piece at the very end, so the client's own timeout never rescues it.
+
+Clients that pile up parallel requests or hang up early move through the
+delays faster. That only ever applies to sessions that are already trapped.
+
+Five tiring levels set how long the delays get:
+
+| Level | First delay | Longest delay | Longest delay, medium tier |
+| --- | --- | --- | --- |
+| 1 | 0.5 s | 4 s | 1 s |
+| 2 | 1 s | 8 s | 1 s |
+| 3 (default) | 1 s | 16 s | 2 s |
+| 4 | 2 s | 32 s | 4 s |
+| 5 | 2 s | 60 s | 8 s |
+
+A level changes how hard trapped sessions are hit. It never changes who gets
+trapped: the score thresholds are separate settings.
+
+### Staying cheap for the defender
+
+A held connection costs an idle socket and a timer. The protected site's own
+connection is released before a hold starts, so trapped clients cannot pin
+it. On top of that:
+
+- sessions held at once are capped (2,000 by default); past the cap the
+  oldest is dropped;
+- each trapped session may run two requests at once, with a short queue;
+- memory spent on held answers is capped;
+- open connections are capped, idle ones are closed, stalled uploads are
+  cut off.
+
+Measured in a test that ships with the code (`tests/test_flood.py`): 2,000
+connections held at once used 83 MB in total, and an ordinary visitor was
+still served in under 20 ms. That is one measurement on a development
+container, not a promise for your hardware.
 
 ## Honest limits
 
@@ -57,6 +106,12 @@ session can be released from the dashboard with one click.
   This is one layer, not the whole defense.
 - An attacker who changes fingerprint and discards cookies starts detection
   from zero. Signals build up again quickly, but there is no memory of them.
+- A tarpit costs an attacker time per connection. One with many addresses
+  and many connections pays less per request. It raises cost; it does not
+  stop a determined, well-resourced attacker.
+- A visitor who shares both address and exact browser fingerprint with a
+  trapped cookie-less client can be slowed for one request before getting a
+  session of their own.
 - False positives are possible. See the tiers above, and use the whitelist
   for your own testing addresses.
 
