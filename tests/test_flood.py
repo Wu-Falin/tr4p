@@ -75,6 +75,7 @@ class Flood(unittest.IsolatedAsyncioTestCase):
         config.tarpit.jitter = 0.0
         config.tarpit.max_sessions = TRAPPED
         config.maze.redirect_chance = 0.0
+        config.decoy.enabled = False
         config.save(home / "config.json")
         seed = Seed.generate()
         seed.save(home / "secret.key")

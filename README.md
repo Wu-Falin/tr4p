@@ -17,11 +17,12 @@ Work in progress.
 | 1 | Detection engine, canaries, event log, dashboard | done |
 | 2a | Escalating tarpit, session caps, tiring levels | done |
 | 2b | Token-burn pages, rabbit hole, fake kill chain, alerts | done |
-| 3 | Mirrored decoy | not started |
+| 3 | Decoy for high-tier sessions | done |
 | 4 | Docker, benchmarks, full documentation | not started |
 
-Right now TR4P **detects, records, slows down and wastes effort** inside its
-own canary paths. It does not reroute anyone to a full decoy site yet.
+TR4P **detects, records, slows down, wastes effort and moves confirmed
+sessions to a decoy**. Docker packaging and full documentation are still to
+come.
 
 ## What it does today
 
@@ -40,7 +41,7 @@ own canary paths. It does not reroute anyone to a full decoy site yet.
 | --- | --- | --- |
 | low | any single signal | logged only, never acted on |
 | medium | two independent kinds of evidence | light tarpit (short, capped delays; page assets are spared) |
-| high | two kinds including a canary, or three kinds | full tarpit |
+| high | two kinds including a canary, or three kinds | full tarpit, and answers come from the decoy |
 
 One signal never does more than log, however often it repeats. Signals that
 come from the same behaviour (for example speed and a burst of missing pages)
@@ -77,6 +78,46 @@ Five tiring levels set how long the delays get:
 
 A level changes how hard trapped sessions are hit. It never changes who gets
 trapped: the score thresholds are separate settings.
+
+### The decoy
+
+Sessions in the high tier are answered by a decoy instead of your site, on
+the same address and port, with the same server banner and cookie behaviour.
+
+- **Emulated only.** The decoy is text computed from a seed. It runs no real
+  vulnerable software, no database, and executes nothing it is sent. Four
+  profiles are available: `generic`, `php`, `wordpress` and `api`. Pick the
+  one closest to your site with `tr4p init --profile`.
+- **Isolated process.** It runs as its own process with an empty environment
+  in an empty directory. It is given a seed derived for it alone, never the
+  install secret, your configuration or your site's address. It listens on
+  loopback, answers only requests carrying a key made up at start, and makes
+  no outbound requests: its "fetch a URL" endpoint always returns the same
+  canned failure. Process isolation is not a sandbox; container isolation
+  comes with the Docker setup.
+- **Fails closed.** If the decoy is down or erroring, a high-tier session
+  gets an error page. It is never passed to your real site. The decoy is
+  restarted automatically.
+- **Synthetic data.** People, companies, orders and posts are invented, in
+  English, Indonesian, Arabic, Korean and Spanish. E-mail uses reserved
+  example domains, addresses use documentation ranges, phone numbers use
+  fictional ranges. Secrets shown are honeytokens made up at run time.
+- **Sensitive-touch alerts.** Reaching user lists, exports, keys or the
+  fake admin area raises an alert, under the same rate limit and
+  de-duplication as every other alert.
+- **Release.** Releasing a session in the dashboard returns it to your real
+  site and wipes what the decoy remembered about it.
+
+Optionally give the decoy the shape of your database, never its contents:
+
+```bash
+tr4p schema schema-only.sql
+```
+
+Only table names, column names and column types are kept. The file is
+parsed as text, never executed, capped at 1 MiB, and refused outright if it
+contains data rows. Export it with `mysqldump --no-data` or
+`pg_dump --schema-only`.
 
 ### Cost layers
 
@@ -145,8 +186,10 @@ it. On top of that:
 
 Measured in a test that ships with the code (`tests/test_flood.py`): 2,000
 connections held at once used 83 MB in total, and an ordinary visitor was
-still served in under 20 ms. That is one measurement on a development
-container, not a promise for your hardware.
+still served in under 20 ms. With the decoy running, the main process idles
+at about 42 MB and the decoy process at about 39 MB, and the proxy handled
+about 3,000 requests per second on one core. These are single measurements
+on a development container, not a promise for your hardware.
 
 ## Honest limits
 
@@ -156,6 +199,9 @@ container, not a promise for your hardware.
   something read text no person could see. They stop nobody.
 - TR4P does not fix vulnerabilities in your application. Keep patching it.
   This is one layer, not the whole defense.
+- The decoy is a profile, not a copy of your application. Someone who knows
+  your real site will notice the difference. In standalone mode the switch
+  is seamless, because the decoy renders the same built-in site.
 - An attacker who changes fingerprint and discards cookies starts detection
   from zero. Signals build up again quickly, but there is no memory of them.
 - A tarpit costs an attacker time per connection. One with many addresses

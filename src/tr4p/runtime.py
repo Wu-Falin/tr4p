@@ -15,6 +15,7 @@ from tr4p.bus import EventBus
 from tr4p.config import CONFIG_FILE, DATABASE_FILE, SEED_FILE, Config
 from tr4p.crawlers import CrawlerVerifier
 from tr4p.dashboard.app import Dashboard
+from tr4p.decoylink import DecoyLink
 from tr4p.engine import Engine
 from tr4p.fsutil import write_private
 from tr4p.levels import level_of
@@ -59,7 +60,11 @@ class Runtime:
         self.persona = Persona.from_seed(seed)
         self.alerts = AlertManager(config.alerts, home, config.instance_name)
         self.engine = Engine(config, seed, _Sink(self.store, self.bus, self.alerts))
-        self.public = PublicApp(config, seed, self.engine, self.persona)
+        self.decoy = (
+            DecoyLink(home, config, seed, self.persona, self.engine.honeytokens)
+            if config.decoy.enabled else None
+        )
+        self.public = PublicApp(config, seed, self.engine, self.persona, decoy=self.decoy)
         self.dashboard = Dashboard(
             config, self.engine, self.store, self.bus,
             instance_id=seed.hex("instance-id", length=16),
@@ -91,6 +96,9 @@ class Runtime:
                 log.warning("saved blocklist could not be read; starting empty")
         self.engine.blocklist.changed = True      # write the export file once at start
         self.alerts.start()
+        if self.decoy is not None:
+            await self.decoy.start()
+            self.engine.release_hook = self._wipe_decoy
         self.engine.crawler_hook = self._verify_crawler
         await self.public.start()
         await self.dashboard.start()
@@ -106,6 +114,8 @@ class Runtime:
         await self.alerts.stop()
         await self.dashboard.stop()
         await self.public.stop()
+        if self.decoy is not None:
+            await self.decoy.stop()
         await asyncio.to_thread(self._save_blocklist)
         await asyncio.to_thread(self.store.close)
 
@@ -123,6 +133,7 @@ class Runtime:
             "tarpit": self.public.tarpit.stats(),
             "level": level_of(self.config),
             "alerts": self.alerts.stats(),
+            "decoy": self.decoy.stats() if self.decoy is not None else {"enabled": False},
             "connections": {
                 "open": self.public.open_connections,
                 "limit": self.config.public.max_connections,
@@ -147,6 +158,10 @@ class Runtime:
         task = asyncio.ensure_future(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _wipe_decoy(self, session: Session) -> None:
+        if self.decoy is not None:
+            self._spawn(self.decoy.wipe(session.key))
 
     def _save_blocklist(self) -> None:
         """Persist the blocklist and rewrite the exported address file."""

@@ -103,6 +103,8 @@ class RuntimeCase(unittest.IsolatedAsyncioTestCase):
                 status = runtime.status()
                 self.assertTrue(status["running"])
                 self.assertEqual(status["level"], 3)
+                self.assertTrue(status["decoy"]["running"])
+                self.assertEqual(status["decoy"]["profile"], "generic")
                 self.assertEqual(status["tarpit"]["completed"], 1)      # the probe was held
                 self.assertEqual(status["connections"]["limit"], 4096)
                 config.public.port = runtime.public.port

@@ -128,6 +128,7 @@ class Counters:
     expired: int = 0
     blocked: int = 0
     teleported: int = 0
+    decoy_touches: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
 
 
@@ -160,6 +161,8 @@ class Engine:
         # Set by the application to verify sessions that claim to be a
         # search engine crawler. Called with the session.
         self.crawler_hook: Callable[[Session], None] | None = None
+        # Called with each session that is released (to wipe its decoy state).
+        self.release_hook: Callable[[Session], None] | None = None
 
     # ------------------------------------------------------------------ cookies
 
@@ -715,6 +718,8 @@ class Engine:
                 target.tier = scoring.TIER_NONE
                 target.phase = target.hits = 0
                 self.blocklist.remove(target.group_key or target.key)
+                if self.release_hook is not None:
+                    self.release_hook(target)
             self.sessions.promote(target)
             self._rescore(target)
             self._list_if_high(target)       # back on the list when re-armed
@@ -724,6 +729,21 @@ class Engine:
             detail="released by operator" if released else "re-armed by operator",
         )
         return True
+
+    def in_decoy(self, session: Session | None) -> bool:
+        """High tier means the decoy, once any crawler check has finished."""
+        return (
+            session is not None
+            and session.tier == scoring.TIER_HIGH
+            and not session.released
+            and session.crawler in ("", "unverified")
+        )
+
+    def decoy_touch(self, session: Session, info: RequestInfo, label: str) -> None:
+        """Something marked sensitive inside the decoy was reached."""
+        self.counters.decoy_touches += 1
+        self._emit("decoy", session, info, self._clock(), signal="decoy_touch",
+                   detail=f"sensitive decoy content reached: {label[:80]}", alert=True)
 
     def system_event(self, detail: str) -> None:
         """Record something the operator did (shown in the event feed)."""
@@ -759,6 +779,7 @@ class Engine:
             "expired": counters.expired,
             "blocked": counters.blocked,
             "teleported": counters.teleported,
+            "decoy_touches": counters.decoy_touches,
             "blocklist": len(self.blocklist),
             "by_type": dict(counters.by_type),
             "tracked_sessions": len(self.sessions),

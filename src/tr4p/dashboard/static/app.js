@@ -95,6 +95,12 @@
     el("c-burned").textContent = duration(pit.burned_seconds || 0);
     el("c-burned-note").textContent = (stats.delayed || 0).toLocaleString() + " delayed \u00b7 " +
       (stats.teleported || 0) + " redirected \u00b7 " + (stats.blocklist || 0) + " on blocklist";
+    const decoy = status.decoy || {};
+    el("c-decoy").textContent = !decoy.enabled ? "Off" : (decoy.running ? "Running" : "Down (failing closed)");
+    el("c-decoy-note").textContent = decoy.enabled
+      ? decoy.profile + " \u00b7 " + (decoy.served || 0) + " served \u00b7 " +
+        (decoy.touches || 0) + " sensitive \u00b7 " + (decoy.restarts || 0) + " restarts"
+      : "high tier stays on the tarpit";
     const notices = status.alerts || {};
     el("c-alerts-note").textContent = notices.configured
       ? notices.sent + " sent \u00b7 " + notices.suppressed + " held back \u00b7 " + notices.failed + " failed"

@@ -26,6 +26,7 @@ from multidict import CIMultiDict
 
 from tr4p.clients import is_asset_request
 from tr4p.config import Config, parse_networks
+from tr4p.decoylink import DecoyDown
 from tr4p.engine import Engine, RequestInfo, Verdict
 from tr4p.inject import build_snippet, can_inject, inject, merge_robots
 from tr4p.loot import Loot, LootFactory
@@ -54,6 +55,7 @@ _INTEGRITY_HEADERS = ("Content-Length", "Content-MD5", "Digest", "Accept-Ranges"
 _GZIP_MIN_BYTES = 512
 _GZIP_INLINE_BYTES = 64 * 1024
 _GZIP_MAX_OWN_BYTES = 256 * 1024
+_DECOY_BODY_LIMIT = 64 * 1024
 
 
 class PublicApp:
@@ -64,6 +66,7 @@ class PublicApp:
         engine: Engine,
         persona: Persona,
         tarpit: Tarpit | None = None,
+        decoy=None,
     ) -> None:
         self._config = config
         self._seed = seed
@@ -71,6 +74,8 @@ class PublicApp:
         self._persona = persona
         self.tarpit = tarpit or Tarpit(config.tarpit, engine.bump)
         self.refused_connections = 0
+        # Link to the decoy process (None when the decoy is switched off).
+        self.decoy = decoy
         self._trusted = parse_networks(config.public.trusted_proxies, "public.trusted_proxies")
         self._loot = LootFactory(seed, engine.honeytokens, persona)
         self._maze = Maze(seed, config, engine.canaries, engine.honeytokens, persona, self._loot)
@@ -213,6 +218,8 @@ class PublicApp:
             self._engine.finish(info, verdict, 302, "")
             return self._loot_response(
                 request, Loot(302, "text/html", b"", location=self._maze.teleport_target()), cookie)
+        if self._config.decoy.enabled and self._engine.in_decoy(verdict.session):
+            return await self._decoy_answer(request, info, verdict, body, cookie)
         if verdict.canary is not None:
             loot = self._canary_loot(request, info, verdict)
             status = loot.status if loot else 403
@@ -224,6 +231,60 @@ class PublicApp:
         if path == "/robots.txt" and request.method == "GET" and not verdict.whitelisted:
             return await self._robots(request, info, verdict, client_ip, secure, cookie)
         return await self._proxy(request, info, verdict, client_ip, secure, body, cookie, held)
+
+    async def _decoy_answer(
+        self, request: web.BaseRequest, info: RequestInfo, verdict: Verdict,
+        body: bytes | None, cookie: str | None,
+    ) -> web.StreamResponse:
+        """Answer a high-tier session from the decoy.
+
+        This path fails closed. Whatever goes wrong, the request is never
+        passed to the protected site: the worst case is a plain error page.
+        """
+        session = verdict.session
+        assert session is not None
+        if verdict.canary is not None:
+            loot = self._canary_loot(request, info, verdict)
+            self._engine.finish(info, verdict, loot.status if loot else 403,
+                                loot.content_type if loot else "")
+            return self._loot_response(request, loot, cookie)
+        if info.path == "/robots.txt":
+            text = merge_robots(None, self._engine.canaries.current().disallow)
+            self._engine.finish(info, verdict, 200, "text/plain")
+            return self._own(request, 200, "text/plain", text.encode("ascii"), cookie)
+        if body is None and request.body_exists:
+            try:
+                body = await asyncio.wait_for(
+                    request.content.read(_DECOY_BODY_LIMIT), self._config.public.body_timeout)
+            except asyncio.TimeoutError:
+                body = b""
+        try:
+            if self.decoy is None:
+                raise DecoyDown("no decoy")
+            reply = await self.decoy.fetch(request.method, request.raw_path, request.headers,
+                                           body, session.key)
+        except DecoyDown:
+            self._engine.finish(info, verdict, 503, "")
+            return self._error(request, 503, cookie)
+        self._engine.finish(info, verdict, reply.status, reply.content_type)
+        if reply.touch:
+            self._engine.decoy_touch(session, info, reply.touch)
+        if reply.status == 404:
+            if verdict.bait:
+                loot = self._loot.render(info.path, request.host)
+                if loot is not None:
+                    return self._loot_response(request, loot, cookie)
+            return self._error(request, 404, cookie)
+        content = reply.body
+        if self._wants_injection(request, info, verdict):
+            content = self._inject(content, reply.content_type, info, verdict) or content
+        extra: CIMultiDict[str] = CIMultiDict(reply.headers)
+        for value in reply.cookies:
+            extra.add("Set-Cookie", value)
+        if reply.status in (301, 302, 303, 307, 308) and not content:
+            content = self._persona.error_page(302)[1]
+        return self._own(request, reply.status, reply.content_type, content,
+                         None if info.is_asset else cookie, extra, compress=True)
 
     async def _small_body(self, request: web.BaseRequest, length: int | None) -> bytes | None:
         """Read a request body only when it is small and worth inspecting.
@@ -564,16 +625,16 @@ class PublicApp:
         content_type: str,
         body: bytes,
         cookie: str | None,
-        extra: dict[str, str] | None = None,
+        extra: Any = None,
         compress: bool = False,
     ) -> web.StreamResponse:
         headers: CIMultiDict[str] = CIMultiDict()
         headers["Server"] = self._server_header()
         headers["Content-Type"] = content_type
         if extra:
-            headers.update(extra)
+            headers.extend(extra)
         if cookie:
-            headers["Set-Cookie"] = cookie
+            headers.add("Set-Cookie", cookie)
         if compress and _wants_gzip(request, headers, body, content_type):
             body = _gzip_bytes(body)
             _mark_gzipped(headers)

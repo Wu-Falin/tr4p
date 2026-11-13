@@ -166,6 +166,7 @@ class Export(unittest.IsolatedAsyncioTestCase):
             config.public.host = "127.0.0.1"
             config.public.port = config.dashboard.port = 0
             config.tarpit.enabled = False
+            config.decoy.enabled = False
             seed = Seed.generate()
             runtime = Runtime(home, config, seed)
             await runtime.start()

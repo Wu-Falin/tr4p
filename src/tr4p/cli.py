@@ -38,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--force", action="store_true", help="replace an existing config")
     init.add_argument("--mode", choices=("proxy", "standalone"))
     init.add_argument("--upstream", help="URL of the site to protect (proxy mode)")
+    init.add_argument("--profile", choices=("generic", "php", "wordpress", "api"),
+                      help="what the decoy pretends to be")
     init.add_argument("--public-host")
     init.add_argument("--public-port", type=int)
     init.add_argument("--dashboard-host")
@@ -50,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("run", help="start the trap and the dashboard")
     commands.add_parser("passwd", help="set or reset the dashboard password")
     commands.add_parser("canaries", help="show the currently armed canary paths")
+    schema = commands.add_parser(
+        "schema", help="give the decoy your table and column names (never any data)")
+    schema.add_argument("file", type=Path, help="SQL schema dump without data rows")
 
     args = parser.parse_args(argv)
     home = (args.home or default_home()).expanduser()
@@ -60,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run(home)
         if args.command == "passwd":
             return _passwd(home)
+        if args.command == "schema":
+            return _schema(home, args.file)
         return _canaries(home)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -104,6 +111,10 @@ def _init(home: Path, args: argparse.Namespace) -> int:
             _ask("Address of the site to protect", public.upstream) if interactive
             else public.upstream
         )
+    config.decoy.profile = args.profile or (
+        _ask("Decoy profile (generic, php, wordpress, api): pick what resembles your site",
+             config.decoy.profile) if interactive else config.decoy.profile
+    )
     public.host = args.public_host or (
         _ask("Public listen address", public.host) if interactive else public.host
     )
@@ -229,6 +240,21 @@ def _passwd(home: Path) -> int:
         return 1
     _store_password(home, password)
     print("Dashboard password updated. Restart the service to sign out existing sessions.")
+    return 0
+
+
+def _schema(home: Path, source: Path) -> int:
+    from tr4p.schema import SchemaError, import_schema
+
+    Config.load(home / CONFIG_FILE)
+    try:
+        schema = import_schema(source, home)
+    except (SchemaError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    columns = sum(len(table["columns"]) for table in schema["tables"])
+    print(f"Imported {len(schema['tables'])} tables and {columns} columns (names and types only).")
+    print("Restart the service for the decoy to use them.")
     return 0
 
 
