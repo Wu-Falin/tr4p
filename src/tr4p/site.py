@@ -49,13 +49,22 @@ _LOGO = (
 )
 
 
+def site_look(persona: Persona, seed: Seed) -> dict:
+    """What the built-in site looks like for this install. The decoy is given
+    the same values, so both render identical pages."""
+    rng = seed.rng("builtin-site")
+    return {"name": persona.site_name, "accent": rng.choice(_ACCENTS),
+            "tagline": rng.choice(_TAGLINES), "year": 2024 + rng.randrange(2)}
+
+
 class BuiltinSite:
-    def __init__(self, persona: Persona, seed: Seed) -> None:
-        rng = seed.rng("builtin-site")
-        self._name = persona.site_name
-        self._accent = rng.choice(_ACCENTS)
-        self._tagline = rng.choice(_TAGLINES)
-        self._year = 2024 + rng.randrange(2)
+    def __init__(self, persona: Persona | None = None, seed: Seed | None = None,
+                 look: dict | None = None) -> None:
+        look = look or site_look(persona, seed)
+        self._name = str(look["name"])
+        self._accent = str(look["accent"])
+        self._tagline = str(look["tagline"])
+        self._year = int(look["year"])
 
     def respond(self, method: str, path: str) -> tuple[int, str, bytes] | None:
         """Return (status, content type, body), or None for "not found"."""
