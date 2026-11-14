@@ -1,7 +1,8 @@
 name: CI
 
-# Linux runs on every push. Windows and macOS cost more runner minutes, so
-# they only run when started by hand (Actions tab -> CI -> Run workflow).
+# Linux and Docker run on every push. Windows and macOS cost more runner
+# minutes, so they only run when started by hand (Actions tab -> CI -> Run
+# workflow).
 on:
   push:
     branches: [main]
@@ -43,6 +44,64 @@ jobs:
         run: python -m pytest -q
       - name: Footprint audit
         run: python scripts/audit-footprints
+
+  quickstart:
+    # Runs the commands from the README quickstart, as written, on a clean
+    # runner, then walks the canary -> trapped -> decoy path.
+    name: Quickstart / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux always; Windows and macOS only on a manual full run.
+        os: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.full_matrix) && '["ubuntu-latest","windows-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Quickstart commands
+        run: |
+          pip install .
+          tr4p init --yes --mode standalone
+          tr4p doctor
+          tr4p run &
+          python scripts/smoke http://127.0.0.1:8080
+
+  docker:
+    name: Docker Compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start
+        run: docker compose up -d --build --wait
+      - name: Smoke flow (canary -> trapped -> decoy)
+        run: python3 scripts/smoke http://127.0.0.1:8080
+      - name: Decoy cannot open an outbound connection
+        run: |
+          if docker compose exec -T decoy python -c "import socket; socket.create_connection(('example.com', 80), 5)"; then
+            echo "the decoy reached the outside world" && exit 1
+          fi
+          docker compose exec -T main python -c "import urllib.request as u; assert u.urlopen('http://decoy:8081/__control/ping', timeout=3).status == 204"
+      - name: Containers are locked down
+        run: |
+          for name in main decoy; do
+            id=$(docker compose ps -q $name)
+            test "$(docker inspect -f '{{.Config.User}}' $id)" = "10001:10001"
+            test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' $id)" = "true"
+            test "$(docker inspect -f '{{.HostConfig.CapDrop}}' $id)" = "[ALL]"
+          done
+          test "$(docker inspect -f '{{.HostConfig.PortBindings}}' $(docker compose ps -q decoy))" = "map[]"
+          docker inspect -f '{{json .HostConfig.PortBindings}}' $(docker compose ps -q main) | grep -q '"8787/tcp":\[{"HostIp":"127.0.0.1"'
+          docker compose exec -T main tr4p doctor
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 60
 
   cross-platform:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
