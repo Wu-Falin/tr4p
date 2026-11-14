@@ -22,8 +22,11 @@ MAX_TABLES = 200
 MAX_COLUMNS = 200
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]{0,62}"
-_DATA = re.compile(r"\b(?:insert\s+into|copy\s+\S+.*?\bfrom\s+stdin|load\s+data|values\s*\()",
-                   re.IGNORECASE | re.DOTALL)
+# Every part is bounded, so a hostile file cannot make the scan slow.
+_DATA = re.compile(r"\b(?:insert\s+into|from\s+stdin|load\s+data|values\s*\()", re.IGNORECASE)
+MAX_TABLE_BODY = 64 * 1024
+# Total characters looked at while reading table bodies, across the file.
+SCAN_BUDGET = 2 * MAX_BYTES
 _COMMENTS = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _CREATE = re.compile(
     rf"create\s+table\s+(?:if\s+not\s+exists\s+)?(?:[`\"\[]?{_IDENT}[`\"\]]?\.)?[`\"\[]?({_IDENT})[`\"\]]?\s*\(",
@@ -48,8 +51,12 @@ def parse_schema(text: str) -> dict:
         raise SchemaError("the file contains data rows; export the schema only "
                           "(for example mysqldump --no-data or pg_dump --schema-only)")
     tables = []
+    budget = SCAN_BUDGET
     for match in _CREATE.finditer(text):
         body = _balanced(text, match.end())
+        budget -= len(body) + 1
+        if budget < 0:
+            break
         columns = []
         for part in _split_top_level(body):
             found = _COLUMN.match(part.strip())
@@ -70,7 +77,8 @@ def parse_schema(text: str) -> dict:
 def _balanced(text: str, start: int) -> str:
     """Text inside the parentheses opened just before `start`."""
     depth, index = 1, start
-    while index < len(text) and depth:
+    end = min(len(text), start + MAX_TABLE_BODY)
+    while index < end and depth:
         char = text[index]
         depth += (char == "(") - (char == ")")
         index += 1

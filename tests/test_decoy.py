@@ -202,6 +202,20 @@ def test_schema_limits_and_junk():
     assert [column["name"] for column in odd["tables"][0]["columns"]] == ["good", "fine"]
 
 
+def test_hostile_schema_files_cannot_make_parsing_slow():
+    import time
+
+    for text in ("CREATE TABLE a (b int);" + "copy x " * 140000,
+                 "create table a (b int, " * 40000,
+                 "create table t (" + "(" * 900000):
+        started = time.perf_counter()
+        try:
+            parse_schema(text)
+        except SchemaError:
+            pass
+        assert time.perf_counter() - started < 3.0
+
+
 def test_imported_schema_shapes_fake_tables(tmp_path):
     source = tmp_path / "schema.sql"
     source.write_text(MYSQL, encoding="utf-8")
