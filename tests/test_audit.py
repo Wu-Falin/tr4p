@@ -135,3 +135,16 @@ def test_this_repository_is_clean():
         pytest.skip("not a git checkout")
     code, out = audit(root)
     assert code == 0, out
+
+
+def test_other_branches_are_only_scanned_on_request(repo):
+    other = ["-c", "user.name=Some Bot", "-c", "user.email=bot" + "@" + "corp-mail.io",
+             "-c", "commit.gpgsign=false"]
+    git(repo, "checkout", "-q", "-b", "updates/package-1")
+    (repo / "c.txt").write_text("fine\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "Bump package", identity=other)
+    git(repo, "checkout", "-q", "main")
+    assert audit(repo)[0] == 0                       # this branch is clean
+    code, out = audit(repo, "--all-refs")
+    assert code == 1 and "author is Some Bot" in out

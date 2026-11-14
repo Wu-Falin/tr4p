@@ -16,7 +16,8 @@ the words it looks for.
 
 Run from anywhere inside the repository:
 
-    python scripts/audit-footprints            # tree and history
+    python scripts/audit-footprints            # tree and this branch's history
+    python scripts/audit-footprints --all-refs # every branch and tag
     python scripts/audit-footprints --no-history
 
 Exit status is 0 when clean and 1 when anything was found.
@@ -247,9 +248,9 @@ def scan_tree(root: Path, audit: Audit) -> int:
     return len(files)
 
 
-def scan_history(root: Path, audit: Audit) -> int:
+def scan_history(root: Path, audit: Audit, scope: str = "HEAD") -> int:
     records = git(
-        root, "log", "--all", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e"
+        root, "log", scope, "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e"
     ).split("\x1e")
     commits = 0
     for record in records:
@@ -271,7 +272,7 @@ def scan_history(root: Path, audit: Audit) -> int:
         audit.text(f"ref:{ref}", ref)
 
     commit, name = "", ""
-    patch = git(root, "log", "--all", "-p", "-U0", "--no-color", "--no-ext-diff",
+    patch = git(root, "log", scope, "-p", "-U0", "--no-color", "--no-ext-diff",
                 "--format=commit:%H")
     for line in patch.splitlines():
         if line.startswith("commit:"):
@@ -291,6 +292,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--no-history", action="store_true", help="scan the working tree only")
     parser.add_argument("--root", type=Path, default=None, help="repository to scan")
+    parser.add_argument("--all-refs", action="store_true",
+                        help="scan the history of every branch and tag, not just the current "
+                             "one (automation such as dependency-update bots keeps branches "
+                             "of its own, with its own author)")
     args = parser.parse_args()
 
     start = args.root or Path(__file__).resolve().parent.parent
@@ -302,7 +307,8 @@ def main() -> int:
 
     audit = Audit(machine_names())
     files = scan_tree(root, audit)
-    commits = 0 if args.no_history else scan_history(root, audit)
+    scope = "--all" if args.all_refs else "HEAD"
+    commits = 0 if args.no_history else scan_history(root, audit, scope)
 
     for finding in audit.findings:
         print(finding)
