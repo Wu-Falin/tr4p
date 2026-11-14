@@ -192,7 +192,8 @@ Webhook (generic JSON with both `text` and `content` fields):
 ```
 
 - **Slack** and **Discord** incoming webhooks accept this as is.
-- **ntfy**: use the topic URL. The message body is the JSON document.
+- **ntfy**: use the topic URL and add `"webhook_format": "ntfy"`. The alert
+  is then sent as a title and one plain line.
 - Private and loopback targets are refused unless you set
   `"webhook_allow_private": true`. Redirects are never followed.
 

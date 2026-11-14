@@ -23,6 +23,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import re
 import smtplib
 import socket
 import ssl
@@ -48,6 +49,7 @@ QUEUE_LIMIT = 100
 TEXT_LIMIT = 200
 SMTP_TIMEOUT = 10.0
 _TIER_RANK = {"": 0, "none": 0, "low": 1, "medium": 2, "high": 3}
+_NUMERIC_HOST = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+))*\.?")
 _DEFUSE = str.maketrans({"@": "(at)", "<": "(", ">": ")", "`": "'", "[": "(", "]": ")", "|": "/"})
 
 
@@ -82,6 +84,9 @@ def check_webhook_url(url: str, allow_private: bool) -> None:
     try:
         ipaddress.ip_address(host)
     except ValueError:
+        if _NUMERIC_HOST.fullmatch(host):
+            # Short, decimal or hex spellings of an address ("127.1").
+            raise AlertError("webhook host is an address in a non-standard form") from None
         return   # a name: checked again when it is resolved
     if not is_public_address(host):
         raise AlertError("webhook address is not public")
@@ -247,8 +252,18 @@ class AlertManager:
         timeout = aiohttp.ClientTimeout(total=config.webhook_timeout)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout,
                                          cookie_jar=aiohttp.DummyCookieJar()) as session:
-            async with session.post(config.webhook_url, json=payload,
-                                    allow_redirects=False) as response:
+            if config.webhook_format == "ntfy":
+                # ntfy shows the request body as the message: send a title
+                # and one plain line, not a JSON document.
+                title = f"Security alert: {payload['event'].get('tier', '')} tier"
+                sending = session.post(
+                    config.webhook_url, data=payload["text"].encode("utf-8"),
+                    headers={"Title": title.encode("ascii", "replace").decode("ascii"),
+                             "Content-Type": "text/plain; charset=utf-8"},
+                    allow_redirects=False)
+            else:
+                sending = session.post(config.webhook_url, json=payload, allow_redirects=False)
+            async with sending as response:
                 await response.read()
                 if response.status >= 300:
                     raise AlertError(f"webhook answered {response.status}")

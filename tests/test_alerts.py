@@ -55,6 +55,7 @@ def test_clean_defuses_attacker_text():
     "ftp://hooks.example.com/x", "file:///etc/hosts", "https:///nohost", "gopher://x.example",
     f"http://{LOOPBACK}:9000/x", f"http://{PRIVATE}/x", f"http://{METADATA}/latest",
     "http://localhost/x", "http://db.internal/x", "http://printer.local/x", "http://[::1]/x",
+    "http://127.1/x", "http://2130706433/x", "http://0x7f000001/x", "http://0x7f.0.0.1/x", "http://0/x",
 ])
 def test_unsafe_webhook_targets_are_refused(url):
     with pytest.raises(AlertError):
@@ -198,6 +199,31 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         await made.stop()
         self.assertEqual(self.received[0]["event"]["tier"], "high")
         self.assertEqual(made.stats()["sent"], 1)
+
+    async def test_ntfy_format_sends_a_title_and_one_plain_line(self):
+        bodies = []
+
+        async def topic(request):
+            bodies.append((request.headers.get("Title"), request.content_type, await request.text()))
+            return web.Response()
+
+        made = self.make("/hook", webhook_format="ntfy")
+        app = web.Application()
+        app.router.add_post("/topic", topic)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        await web.TCPSite(runner, LOOPBACK, 0).start()
+        made._config.webhook_url = f"http://{LOOPBACK}:{runner.addresses[0][1]}/topic"
+        try:
+            made.submit(event(user_agent="x\r\nTitle: forged"))
+            await made.deliver(made._queue.get_nowait())
+        finally:
+            await runner.cleanup()
+        title, content_type, text = bodies[0]
+        self.assertEqual(title, "Security alert: high tier")
+        self.assertEqual(content_type, "text/plain")
+        self.assertTrue(text.startswith("[shop] high tier") and "\n" not in text and "{" not in text)
+        self.assertEqual(made.sent, 1)
 
     async def test_private_target_is_refused_unless_allowed(self):
         made = self.make("/hook", webhook_allow_private=False)

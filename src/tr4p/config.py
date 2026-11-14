@@ -186,6 +186,9 @@ class AlertConfig:
     # Webhooks to private or loopback addresses are refused unless this is set.
     webhook_allow_private: bool = False
     webhook_timeout: float = 5.0
+    # "json" suits Slack, Discord and generic receivers; "ntfy" sends a
+    # title and one plain line.
+    webhook_format: str = "json"
     email_to: list[str] = field(default_factory=list)
     email_from: str = ""
     smtp_host: str = ""
@@ -375,6 +378,8 @@ class Config:
         _require(not alerts.webhook_url or _is_http_url(alerts.webhook_url),
                  "alerts.webhook_url must be an http(s) URL")
         _require(1 <= alerts.webhook_timeout <= 30, "alerts.webhook_timeout must be 1-30 seconds")
+        _require(alerts.webhook_format in ("json", "ntfy"),
+                 "alerts.webhook_format must be json or ntfy")
         _require(alerts.smtp_security in ("starttls", "ssl", "none"),
                  "alerts.smtp_security must be starttls, ssl or none")
         _require(1 <= alerts.smtp_port <= 65535, "alerts.smtp_port must be 1-65535")
