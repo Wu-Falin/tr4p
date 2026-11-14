@@ -1,6 +1,6 @@
 # Build stage: turn the source into a wheel. Nothing from here but the wheel
 # reaches the final image.
-FROM python:3.12.7-slim-bookworm AS build
+FROM python:3.15.0-slim-bookworm AS build
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
@@ -8,7 +8,7 @@ RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 
 # Runtime stage: no compiler, no source tree, no secrets. Config and the
 # seed are created at first start inside the mounted /data volume.
-FROM python:3.12.7-slim-bookworm
+FROM python:3.15.0-slim-bookworm
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app \
     && mkdir -p /data /handoff /app/scripts \
     && chown 10001:10001 /data /handoff \
