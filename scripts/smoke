@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""End-to-end smoke check against a running TR4P in standalone mode.
+
+Walks the path an attacker would: finds a canary directory in robots.txt,
+reads a bait file, uses the planted key, and confirms that from then on the
+answers come from the decoy while another visitor still sees the normal site.
+
+Usage: python scripts/smoke http://127.0.0.1:8080
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def get(base: str, path: str, agent: str, key: str = "") -> tuple[int, str]:
+    request = urllib.request.Request(base + path, headers={"User-Agent": agent, "Accept": "*/*"})
+    if key:
+        request.add_header("Authorization", f"Bearer {key}")
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode("utf-8", "replace")
+
+
+def main() -> int:
+    base = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8080"
+    for attempt in range(60):
+        try:
+            status, _ = get(base, "/", "smoke-visitor")
+            break
+        except OSError:
+            time.sleep(1)
+    else:
+        print("FAIL: service not reachable")
+        return 1
+    print(f"1. site answers: {status}")
+    assert status == 200
+
+    status, robots = get(base, "/robots.txt", "smoke-visitor")
+    canaries = [line.split(":", 1)[1].strip() for line in robots.splitlines()
+                if line.lower().startswith("disallow:")]
+    print(f"2. robots.txt lists {len(canaries)} canary directories")
+    assert status == 200 and canaries
+
+    status, bait = get(base, canaries[0] + "prod.env", "smoke-attacker")
+    key = next((line.split("=", 1)[1] for line in bait.splitlines() if line.startswith("API_KEY=")), "")
+    print(f"3. bait file served: {status}, planted key found: {bool(key)}")
+    assert status == 200 and key
+
+    started = time.time()
+    status, body = get(base, "/api/users", "smoke-attacker", key)
+    print(f"4. using the key: {status} after {time.time() - started:.1f}s (held by the tarpit)")
+    assert status == 200 and json.loads(body)["total"] > 0, "expected the decoy's fake user list"
+
+    status, _ = get(base, "/api/users", "smoke-visitor")
+    print(f"5. another visitor asking for the same path: {status} (normal site, no such page)")
+    assert status == 404
+    print("OK: canary -> trapped -> decoy")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except AssertionError as problem:
+        print(f"FAIL: {problem}")
+        raise SystemExit(1)

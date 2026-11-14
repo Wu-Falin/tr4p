@@ -1,0 +1,78 @@
+# TR4P with the decoy as a separate, locked-down container.
+#
+#   docker compose up -d
+#   docker compose logs main        # shows the one-time dashboard setup code
+#
+# Public listener:  port 8080 (put your TLS proxy in front of it)
+# Dashboard:        http://127.0.0.1:8787, reachable from this machine only
+#
+# To protect an existing site instead of serving the built-in one:
+#   TR4P_MODE=proxy TR4P_UPSTREAM=http://your-app:3000 docker compose up -d
+#
+# Together the two services are limited to 1 CPU and 512 MB.
+
+x-hardening: &hardening
+  build: .
+  image: tr4p:local
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  user: "10001:10001"
+
+services:
+  main:
+    <<: *hardening
+    command: ["run"]
+    environment:
+      TR4P_MODE: ${TR4P_MODE:-standalone}
+      TR4P_UPSTREAM: ${TR4P_UPSTREAM:-}
+      TR4P_PROFILE: ${TR4P_PROFILE:-generic}
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:8787:8787"     # dashboard: this machine only, never public
+    volumes:
+      - data:/data                # config, seed and database (owner-only files)
+      - handoff:/handoff          # settings handed to the decoy
+    networks:
+      - edge
+      - decoy
+    cpus: 0.75
+    mem_limit: 352m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8787/api/v1/state', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  decoy:
+    <<: *hardening
+    command: ["decoy"]
+    volumes:
+      - handoff:/handoff:ro       # the only thing the decoy can read
+    networks:
+      - decoy                     # internal only: no route out, nothing published
+    cpus: 0.25
+    mem_limit: 160m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8081/__control/ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  edge: {}
+  decoy:
+    internal: true                # no gateway to the outside world
+
+volumes:
+  data: {}
+  handoff: {}
