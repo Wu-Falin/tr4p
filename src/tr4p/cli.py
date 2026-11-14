@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--public-port", type=int)
     init.add_argument("--dashboard-host")
     init.add_argument("--dashboard-port", type=int)
+    init.add_argument("--decoy-url", help="address of a separately running decoy service")
+    init.add_argument("--decoy-handoff", help="directory shared with that decoy service")
     init.add_argument("--trusted-proxy", action="append", default=None,
                       help="address/network of your TLS proxy or CDN (repeatable)")
     init.add_argument("--whitelist", action="append", default=None,
@@ -52,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("run", help="start the trap and the dashboard")
     commands.add_parser("passwd", help="set or reset the dashboard password")
     commands.add_parser("canaries", help="show the currently armed canary paths")
+    commands.add_parser("doctor", help="check the installation and point out problems")
+    purge = commands.add_parser(
+        "purge", help="delete stored events and sessions (they contain client addresses)")
+    which = purge.add_mutually_exclusive_group(required=True)
+    which.add_argument("--days", type=float, help="delete everything older than this many days")
+    which.add_argument("--all", action="store_true", help="delete everything")
     schema = commands.add_parser(
         "schema", help="give the decoy your table and column names (never any data)")
     schema.add_argument("file", type=Path, help="SQL schema dump without data rows")
@@ -67,6 +75,11 @@ def main(argv: list[str] | None = None) -> int:
             return _passwd(home)
         if args.command == "schema":
             return _schema(home, args.file)
+        if args.command == "doctor":
+            from tr4p.doctor import run_doctor
+            return run_doctor(home)
+        if args.command == "purge":
+            return _purge(home, None if args.all else args.days)
         return _canaries(home)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -115,6 +128,9 @@ def _init(home: Path, args: argparse.Namespace) -> int:
         _ask("Decoy profile (generic, php, wordpress, api): pick what resembles your site",
              config.decoy.profile) if interactive else config.decoy.profile
     )
+    if args.decoy_url:
+        config.decoy.url = args.decoy_url
+        config.decoy.handoff_dir = args.decoy_handoff or ""
     public.host = args.public_host or (
         _ask("Public listen address", public.host) if interactive else public.host
     )
@@ -240,6 +256,24 @@ def _passwd(home: Path) -> int:
         return 1
     _store_password(home, password)
     print("Dashboard password updated. Restart the service to sign out existing sessions.")
+    return 0
+
+
+def _purge(home: Path, days: float | None) -> int:
+    import time
+
+    Config.load(home / CONFIG_FILE)
+    store = Store(home / DATABASE_FILE)
+    store.open()
+    try:
+        before = None if days is None else time.time() - days * 86400.0
+        events, sessions = store.purge(before)
+        if days is None:
+            store.set_setting("blocklist", "[]")
+    finally:
+        store.close()
+    print(f"Deleted {events} events and {sessions} saved sessions.")
+    print("Restart the service so it forgets what it still holds in memory.")
     return 0
 
 

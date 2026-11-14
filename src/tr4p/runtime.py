@@ -29,6 +29,7 @@ log = logging.getLogger("tr4p")
 
 SWEEP_SECONDS = 60.0
 BLOCKLIST_SECONDS = 5.0
+RETENTION_SECONDS = 3600.0
 BLOCKLIST_FILE = "blocklist.txt"
 BLOCKLIST_SETTING = "blocklist"
 
@@ -174,16 +175,27 @@ class Runtime:
         if self.config.block.export:
             write_private(self.home / BLOCKLIST_FILE, blocklist.export_text().encode("ascii"))
 
+    def _apply_retention(self) -> None:
+        cutoff = time.time() - self.config.storage.retention_days * 86400.0
+        events, sessions = self.store.purge(cutoff)
+        if events or sessions:
+            log.info("retention: removed %d events and %d sessions", events, sessions)
+
     async def _housekeeping(self) -> None:
         elapsed = 0.0
+        since_retention = RETENTION_SECONDS      # run once shortly after start
         while True:
             await asyncio.sleep(BLOCKLIST_SECONDS)
             elapsed += BLOCKLIST_SECONDS
+            since_retention += BLOCKLIST_SECONDS
             try:
                 await asyncio.to_thread(self._save_blocklist)
                 if elapsed >= SWEEP_SECONDS:
                     elapsed = 0.0
                     self.engine.sweep()
+                if since_retention >= RETENTION_SECONDS:
+                    since_retention = 0.0
+                    await asyncio.to_thread(self._apply_retention)
             except Exception:
                 log.exception("housekeeping failed")
 

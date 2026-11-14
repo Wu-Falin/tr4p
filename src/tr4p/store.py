@@ -265,5 +265,22 @@ class Store:
         finally:
             connection.close()
 
+    def purge(self, before: float | None = None) -> tuple[int, int]:
+        """Delete events and saved sessions older than `before` (a
+        timestamp), or everything when it is None. Returns the two counts."""
+        connection = self._connect()
+        try:
+            if before is None:
+                events = connection.execute("DELETE FROM events").rowcount
+                sessions = connection.execute("DELETE FROM sessions").rowcount
+            else:
+                events = connection.execute("DELETE FROM events WHERE ts < ?", (before,)).rowcount
+                sessions = connection.execute(
+                    "DELETE FROM sessions WHERE last_seen < ?", (before,)).rowcount
+            connection.commit()
+            return events, sessions
+        finally:
+            connection.close()
+
     async def events_async(self, **kwargs: Any) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self.events, **kwargs)
