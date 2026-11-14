@@ -96,6 +96,22 @@ class ProxyPassThrough(ListenerCase):
         self.assertEqual(seen["headers"]["host"], f"127.0.0.1:{self.app.port}")
         self.assertEqual(seen["headers"]["user-agent"], BROWSER["User-Agent"])
 
+    async def test_address_headers_sent_by_a_client_are_not_passed_on(self):
+        # A visitor must not be able to tell the protected site a made-up address.
+        claims = {"X-Forwarded-For": "203.0.113.99", "X-Real-IP": "203.0.113.98",
+                  "Forwarded": "for=203.0.113.97", "True-Client-IP": "203.0.113.96",
+                  "X-Forwarded-Host": "other.example", "X-Forwarded-Proto": "https"}
+        async with self.client.get(self.base + "/echo",
+                                   headers=dict(BROWSER, Accept="application/json", **claims)) as response:
+            seen = json.loads(await response.read())["headers"]
+        self.assertEqual(seen["x-forwarded-for"], "127.0.0.1")
+        self.assertEqual(seen["x-real-ip"], "127.0.0.1")
+        self.assertEqual(seen["x-forwarded-proto"], "http")
+        self.assertNotEqual(seen["x-forwarded-host"], "other.example")
+        self.assertNotIn("forwarded", seen)
+        self.assertNotIn("true-client-ip", seen)
+        self.assertNotIn("203.0.113.9", json.dumps(seen))
+
     async def test_client_without_user_agent_gets_none_invented(self):
         async with self.client.get(self.base + "/echo", headers={"Accept": "application/json"}) as response:
             seen = json.loads(await response.read())

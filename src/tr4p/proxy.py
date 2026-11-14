@@ -25,6 +25,11 @@ _WEBSOCKET_HEADERS = frozenset({
     "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
     "sec-websocket-protocol", "sec-websocket-accept",
 })
+# Headers that claim who the client is. Never passed on as received.
+_ADDRESS_HEADERS = frozenset({
+    "x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-proto", "x-forwarded-host",
+    "x-client-ip", "true-client-ip", "cf-connecting-ip", "x-cluster-client-ip",
+})
 # Headers the HTTP client library would otherwise add on its own.
 _NO_AUTO_HEADERS = ("User-Agent", "Accept", "Accept-Encoding", "Content-Type")
 
@@ -82,7 +87,7 @@ class Upstream:
             lowered = name.lower()
             if lowered in HOP_BY_HOP or lowered in named or lowered in _WEBSOCKET_HEADERS:
                 continue
-            if lowered == "host":
+            if lowered == "host" or lowered in _ADDRESS_HEADERS:
                 continue
             if lowered == "cookie" and strip_cookie:
                 value = _without_cookie(value, strip_cookie)
@@ -91,8 +96,11 @@ class Upstream:
             forwarded.add(name, value)
         original_host = headers.get("host", "")
         forwarded["Host"] = original_host if self._config.preserve_host and original_host else self._host
-        previous = headers.get("x-forwarded-for")
-        forwarded["X-Forwarded-For"] = f"{previous}, {client_ip}" if previous else client_ip
+        # The client address was worked out by us (from the socket, or from a
+        # trusted proxy). Whatever the request itself claimed is dropped, so
+        # the protected site cannot be told a made-up address.
+        forwarded["X-Forwarded-For"] = client_ip
+        forwarded["X-Real-IP"] = client_ip
         forwarded["X-Forwarded-Proto"] = "https" if secure else "http"
         if original_host:
             forwarded["X-Forwarded-Host"] = original_host
