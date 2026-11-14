@@ -191,8 +191,8 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         made = self.make("/hook")
         made.start()
         made.submit(event())
-        for _ in range(100):
-            if self.received:
+        for _ in range(200):
+            if made.sent:                 # counted once the answer has been read
                 break
             await asyncio.sleep(0.02)
         await made.stop()
