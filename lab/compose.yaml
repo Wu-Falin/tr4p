@@ -1,0 +1,34 @@
+# Practice lab: TR4P in front of a deliberately vulnerable training
+# application (OWASP Juice Shop).
+#
+# FOR YOUR OWN MACHINE ONLY. Never expose this to a network you do not
+# control, and never point attack tools at systems that are not yours.
+#
+#   docker compose -f compose.yaml -f lab/compose.yaml up -d --build
+#
+# Public listener: http://127.0.0.1:8080   Dashboard: http://127.0.0.1:8787
+
+services:
+  main:
+    environment:
+      TR4P_MODE: proxy
+      TR4P_UPSTREAM: http://target:3000
+      TR4P_PROFILE: api
+    ports: !override
+      - "127.0.0.1:8080:8080"     # lab stays on this machine
+      - "127.0.0.1:8787:8787"
+    networks:
+      - edge
+      - decoy
+      - lab
+
+  target:
+    image: bkimminich/juice-shop:v17.1.1
+    restart: unless-stopped
+    networks:
+      - lab                       # reachable only through TR4P
+    mem_limit: 512m
+
+networks:
+  lab:
+    internal: true
