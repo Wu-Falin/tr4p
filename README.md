@@ -195,6 +195,20 @@ Read these before relying on it.
 - **It stores client addresses** of flagged sessions. See privacy and
   retention in the guidebook.
 
+## Not built yet
+
+- Encryption of the seed file at rest. It is protected by file permissions
+  only.
+- The text-only mischief pack (taunting fake rows and messages).
+- A dashboard for several instances. The API is ready for one; only the
+  single-instance view exists.
+- TLS fingerprinting. TR4P sits behind your TLS proxy and never sees the
+  handshake; fingerprints come from headers and behaviour.
+- Decoy profiles backed by real application stacks. The decoy is emulated.
+
+Alert delivery was tested against local stand-in servers only, not against
+the live Slack, Discord, ntfy or mail services.
+
 ## Documentation
 
 - [Defender guidebook](docs/GUIDE.md): deployment, TLS proxy setup, tuning,
