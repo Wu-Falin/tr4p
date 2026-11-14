@@ -1,17 +1,26 @@
 """Decoy process entry point.
 
-Started by the main service with an empty environment. Reads one JSON
-document from standard input, binds to loopback, prints "ready <port>" and
-serves until its input closes or it is told to stop. Every request must
-carry the shared key, so nothing else on the machine can talk to it.
+Two ways to start it:
+
+* As a child of the main service (the default): settings arrive as one JSON
+  line on standard input, the process binds to loopback and stops when its
+  input closes.
+* As its own service in a container: `--settings FILE` names a hand-over
+  file written by the main service into a directory both can see. That file
+  is the only thing this process ever reads.
+
+Every request except the bare liveness ping must carry the shared key.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hmac
 import json
 import sys
+import time
+from pathlib import Path
 
 from aiohttp import web
 
@@ -31,10 +40,12 @@ def build(settings: dict) -> web.Application:
     key = str(settings["key"]).encode("ascii")
 
     async def serve(request: web.Request) -> web.StreamResponse:
+        path = request.path
+        if path == "/__control/ping":
+            return web.Response(status=204)       # liveness only, says nothing
         if not hmac.compare_digest(request.headers.get(KEY_HEADER, "").encode("ascii", "replace"), key):
             return web.Response(status=403)
         sid = request.headers.get(SESSION_HEADER, "")[:64]
-        path = request.path
         if path == "/__control/health":
             return web.json_response(decoy.stats())
         if path == "/__control/wipe":
@@ -55,24 +66,38 @@ def build(settings: dict) -> web.Application:
     return app
 
 
-async def run(settings: dict) -> None:
-    runner = web.AppRunner(build(settings), access_log=None, handle_signals=False)
+async def run(settings: dict, host: str, port: int, follow_input: bool) -> None:
+    runner = web.AppRunner(build(settings), access_log=None, handle_signals=not follow_input)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", int(settings.get("port", 0)))
+    site = web.TCPSite(runner, host, port)
     await site.start()
     print(f"ready {runner.addresses[0][1]}", flush=True)
-    loop = asyncio.get_running_loop()
     try:
-        # The parent keeps our input open. When it closes, the parent is gone.
-        await loop.run_in_executor(None, sys.stdin.read)
+        if follow_input:
+            # The parent keeps our input open. When it closes, the parent is gone.
+            await asyncio.get_running_loop().run_in_executor(None, sys.stdin.read)
+        else:
+            await asyncio.Event().wait()
     finally:
         await runner.cleanup()
 
 
-def main() -> int:
-    settings = json.loads(sys.stdin.readline())
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="tr4p.decoy")
+    parser.add_argument("--settings", type=Path, help="hand-over file written by the main service")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=0)
+    args = parser.parse_args(argv)
+    if args.settings is None:
+        settings = json.loads(sys.stdin.readline())
+        host, port, follow = "127.0.0.1", int(settings.get("port", 0)), True
+    else:
+        while not args.settings.is_file():        # the main service writes it at start
+            time.sleep(1.0)
+        settings = json.loads(args.settings.read_text(encoding="utf-8"))
+        host, port, follow = args.host, args.port, False
     try:
-        asyncio.run(run(settings))
+        asyncio.run(run(settings, host, port, follow))
     except KeyboardInterrupt:
         pass
     return 0

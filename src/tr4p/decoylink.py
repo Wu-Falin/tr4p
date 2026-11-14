@@ -32,7 +32,7 @@ from multidict import CIMultiDict
 
 from tr4p.config import Config
 from tr4p.decoy.__main__ import KEY_HEADER, SESSION_HEADER, TOUCH_HEADER
-from tr4p.fsutil import ensure_private_dir
+from tr4p.fsutil import ensure_private_dir, write_private
 from tr4p.honeytoken import Honeytokens
 from tr4p.persona import Persona
 from tr4p.schema import load_schema
@@ -42,6 +42,8 @@ from tr4p.site import site_look
 log = logging.getLogger("tr4p.decoy")
 
 RUN_DIR = "decoy-run"
+HANDOFF_FILE = "decoy.json"
+HEALTH_SECONDS = 5.0
 START_TIMEOUT = 20.0
 RESTART_DELAYS = (1.0, 2.0, 5.0, 15.0, 60.0)
 _FORWARD = ("user-agent", "accept", "accept-language", "content-type", "referer")
@@ -77,6 +79,9 @@ class DecoyLink:
         }
         self._key = ""
         self._port = 0
+        # Remote mode: the decoy is another service (a container).
+        self._remote = config.decoy.url.rstrip("/")
+        self._healthy = False
         self._process: asyncio.subprocess.Process | None = None
         self._session: aiohttp.ClientSession | None = None
         self._watcher: asyncio.Task[None] | None = None
@@ -91,7 +96,34 @@ class DecoyLink:
 
     @property
     def running(self) -> bool:
+        if self._remote:
+            return self._healthy
         return self._process is not None and self._process.returncode is None and self._port > 0
+
+    def _base(self) -> str:
+        return self._remote or f"http://127.0.0.1:{self._port}"
+
+    def write_handoff(self) -> Path:
+        """Write what a separately running decoy needs to know. The key is
+        derived from the seed so both sides agree across restarts."""
+        self._key = self._seed.hex("decoy-key", length=48)
+        settings = dict(self._settings, key=self._key, schema=load_schema(self._home))
+        path = Path(self._config.decoy.handoff_dir) / HANDOFF_FILE
+        write_private(path, json.dumps(settings).encode("utf-8"))
+        return path
+
+    async def _check_remote(self) -> None:
+        try:
+            response = await self._call("GET", "/__control/health", "", force=True)
+            async with response:
+                self._healthy = response.status == 200
+        except DecoyDown:
+            self._healthy = False
+
+    async def _watch_remote(self) -> None:
+        while not self._stopping:
+            await self._check_remote()
+            await asyncio.sleep(1.0 if not self._healthy else HEALTH_SECONDS)
 
     def session_id(self, session_key: str) -> str:
         return self._seed.hex("decoy-session", session_key, length=32)
@@ -102,6 +134,12 @@ class DecoyLink:
             cookie_jar=aiohttp.DummyCookieJar(), auto_decompress=False,
             skip_auto_headers=("User-Agent", "Accept", "Accept-Encoding", "Content-Type"),
         )
+        if self._remote:
+            self.write_handoff()
+            await self._check_remote()
+            self.started_at = time.time()
+            self._watcher = asyncio.ensure_future(self._watch_remote())
+            return
         try:
             await self._spawn()
         except (OSError, DecoyDown) as exc:
@@ -178,15 +216,16 @@ class DecoyLink:
     # --------------------------------------------------------------- requests
 
     async def _call(self, method: str, target: str, sid: str,
-                    headers: Mapping[str, str] | None = None, body: bytes = b""):
-        if not self.running or self._session is None:
+                    headers: Mapping[str, str] | None = None, body: bytes = b"",
+                    force: bool = False):
+        if self._session is None or not (force or self.running):
             raise DecoyDown("decoy is not running")
         send: CIMultiDict[str] = CIMultiDict(headers or {})
         send[KEY_HEADER] = self._key
         send[SESSION_HEADER] = sid
         try:
             return await self._session.request(
-                method, f"http://127.0.0.1:{self._port}{target}", headers=send,
+                method, f"{self._base()}{target}", headers=send,
                 data=body or None, allow_redirects=False,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as exc:
@@ -231,6 +270,7 @@ class DecoyLink:
     def stats(self) -> dict[str, Any]:
         return {
             "enabled": True, "running": self.running, "profile": self._config.decoy.profile,
+            "placement": "separate service" if self._remote else "child process",
             "served": self.served, "touches": self.touches, "failures": self.failures,
             "restarts": self.restarts,
             "uptime": time.time() - self.started_at if self.running else 0.0,

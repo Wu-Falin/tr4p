@@ -217,11 +217,19 @@ class DecoyConfig:
     # generic, php, wordpress or api
     profile: str = "generic"
     timeout: float = 5.0
+    # Container setups run the decoy as its own service. Set its address
+    # here and the directory both services share for the hand-over file.
+    # Empty means: start the decoy as a local child process.
+    url: str = ""
+    handoff_dir: str = ""
 
 
 @dataclass
 class StorageConfig:
     max_events: int = 200000
+    # Events and flagged sessions older than this are deleted. Client
+    # addresses can be personal data: keep them only as long as needed.
+    retention_days: float = 30.0
 
 
 @dataclass
@@ -379,6 +387,11 @@ class Config:
         _require(self.decoy.profile in DECOY_PROFILES,
                  f"decoy.profile must be one of {DECOY_PROFILES}")
         _require(1 <= self.decoy.timeout <= 30, "decoy.timeout must be 1-30 seconds")
+        _require(not self.decoy.url or _is_http_url(self.decoy.url),
+                 "decoy.url must be an http(s) URL")
+        _require(not self.decoy.url or bool(self.decoy.handoff_dir),
+                 "decoy.handoff_dir is required when decoy.url is set")
+        _require(self.storage.retention_days > 0, "storage.retention_days must be positive")
         _require(self.storage.max_events >= 1000, "storage.max_events must be >= 1000")
         _require(dash.session_hours > 0, "dashboard.session_hours must be positive")
         parse_networks(self.whitelist, "whitelist")
