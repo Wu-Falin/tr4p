@@ -163,7 +163,7 @@ class CrawlerCase(unittest.IsolatedAsyncioTestCase):
         import tr4p.crawlers
 
         async def resolver(address):
-            await asyncio.sleep(5)
+            await asyncio.Event().wait()           # never answers
 
         original = tr4p.crawlers.LOOKUP_TIMEOUT
         tr4p.crawlers.LOOKUP_TIMEOUT = 0.05

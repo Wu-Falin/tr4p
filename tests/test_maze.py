@@ -62,11 +62,14 @@ def test_burn_page_is_poisoned_and_uses_no_real_addresses():
     assert addresses and all(address.startswith("203.0.113.") for address in addresses)
 
 
-def test_burn_generation_is_cheap():
+def test_burn_generation_is_bounded():
+    """The size is capped; the thread timeout only guards against a hang."""
+    from tests.helpers import finishes_within
+
     made, engine, _ = build(burn_bytes=524288)
-    started = time.perf_counter()
-    ask(made, f"/{segment(engine, 'link')}/big.log")
-    assert time.perf_counter() - started < 0.5
+    made_pages = []
+    assert finishes_within(lambda: made_pages.append(ask(made, f"/{segment(engine, 'link')}/big.log")))
+    assert len(made_pages[0].body) == HARD_PAGE_CAP == 524288
 
 
 # ---------------------------------------------------------------- rabbit hole

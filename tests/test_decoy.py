@@ -202,18 +202,28 @@ def test_schema_limits_and_junk():
     assert [column["name"] for column in odd["tables"][0]["columns"]] == ["good", "fine"]
 
 
-def test_hostile_schema_files_cannot_make_parsing_slow():
-    import time
+def test_hostile_schema_files_cannot_make_parsing_slow(monkeypatch):
+    """What is asserted is the work done (characters scanned), not seconds;
+    the thread timeout only guards against a hang."""
+    import tr4p.schema as schema
+    from tests.helpers import finishes_within
 
+    scanned = []
+    real = schema._balanced
+    monkeypatch.setattr(schema, "_balanced", lambda text, start: scanned.append(len(real(text, start))) or real(text, start))
     for text in ("CREATE TABLE a (b int);" + "copy x " * 140000,
                  "create table a (b int, " * 40000,
                  "create table t (" + "(" * 900000):
-        started = time.perf_counter()
-        try:
-            parse_schema(text)
-        except SchemaError:
-            pass
-        assert time.perf_counter() - started < 3.0
+        scanned.clear()
+
+        def run():
+            try:
+                parse_schema(text)
+            except SchemaError:
+                pass
+
+        assert finishes_within(run)
+        assert sum(scanned) <= schema.SCAN_BUDGET + schema.MAX_TABLE_BODY
 
 
 def test_imported_schema_shapes_fake_tables(tmp_path):
@@ -265,7 +275,9 @@ class Routing(ListenerCase):
                               self.engine.honeytokens)
         await self.link.start()
         self.app.decoy = self.link
-        self.engine.release_hook = lambda session: asyncio.ensure_future(self.link.wipe(session.key))
+        self.wipes = []
+        self.engine.release_hook = lambda session: self.wipes.append(
+            asyncio.ensure_future(self.link.wipe(session.key)))
         secret = self.engine.honeytokens.value("api_key")
         self.attacker = dict(BROWSER, Authorization=f"Bearer {secret}")
         self.visitor = dict(BROWSER, **{"User-Agent": "Mozilla/5.0 (X11) Firefox/128.0"})
@@ -341,8 +353,8 @@ class Routing(ListenerCase):
         admin, _ = await self.get("/admin", headers=self.attacker)
         self.assertEqual(admin.status, 200)
         self.engine.release(session.key)
-        await asyncio.sleep(0.2)
-        self.assertFalse(await self.link.wipe(session.key))          # already wiped by the release
+        self.assertEqual(await asyncio.gather(*self.wipes), [True])  # the release wiped the decoy's state
+        self.assertFalse(await self.link.wipe(session.key))          # nothing left to wipe
         response, body = await self.get("/", headers=BROWSER)
         self.assertIn(b"Real content.", body)
 

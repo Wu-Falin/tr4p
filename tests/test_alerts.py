@@ -12,6 +12,7 @@ import pytest
 from aiohttp import web
 
 import tr4p.alerts as alerts
+from tests.helpers import eventually
 from tr4p.alerts import AlertError, AlertManager, GuardedResolver, check_webhook_url, clean
 from tr4p.config import AlertConfig, Config, ConfigError
 
@@ -166,7 +167,7 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
             raise web.HTTPFound("/hook")
 
         async def slow(request):
-            await asyncio.sleep(3)
+            await asyncio.Event().wait()         # never answers
             return web.Response()
 
         app = web.Application()
@@ -192,10 +193,7 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         made = self.make("/hook")
         made.start()
         made.submit(event())
-        for _ in range(200):
-            if made.sent:                 # counted once the answer has been read
-                break
-            await asyncio.sleep(0.02)
+        await eventually(lambda: made.sent, "webhook delivered")   # counted once the answer is read
         await made.stop()
         self.assertEqual(self.received[0]["event"]["tier"], "high")
         self.assertEqual(made.stats()["sent"], 1)
@@ -241,8 +239,10 @@ class Delivery(unittest.IsolatedAsyncioTestCase):
         made = self.make("/slow")
         started = time.monotonic()
         with self.assertLogs("tr4p.alerts", level="WARNING"):
-            await made.deliver({"text": "x", "event": {}})
-        self.assertLess(time.monotonic() - started, 2.0)
+            # The server never answers: delivery must give up by itself. The
+            # outer timeout is only a hang guard.
+            await asyncio.wait_for(made.deliver({"text": "x", "event": {}}), 60)
+        self.assertGreaterEqual(time.monotonic() - started, 0.9)       # it did wait the 1 s timeout
         self.assertEqual(made.failed, 1)
 
 
