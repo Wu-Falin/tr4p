@@ -73,6 +73,7 @@ _SECURITY_HEADERS = {
 _STATIC = {
     "auth.css": ("text/css", False),
     "auth.js": ("application/javascript", False),
+    "tokens.css": ("text/css", False),
     "app.css": ("text/css", True),
     "app.js": ("application/javascript", True),
 }

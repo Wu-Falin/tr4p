@@ -4,140 +4,164 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>TR4P dashboard</title>
+<link rel="icon" href="data:,">
+<title>Operations console</title>
+<link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand">TR4P</div>
-  <div class="instance" id="instance"></div>
-  <div class="status" id="status" data-state="unknown" role="status" aria-live="polite">
-    <span class="dot" aria-hidden="true"></span><span id="status-text">Connecting</span>
-  </div>
-  <div class="uptime">Uptime <strong id="uptime">-</strong></div>
-  <button id="logout" class="ghost" type="button">Sign out</button>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <span class="brand">Operations console</span>
+  <span class="instance mono" id="instance"></span>
+  <span class="pill" id="status" data-state="unknown" role="status" aria-live="polite">
+    <span class="pill-icon" id="status-icon"></span><span id="status-text">Connecting</span>
+  </span>
+  <span class="uptime muted">Uptime <span class="mono" id="uptime">-</span></span>
+  <button id="logout" class="btn" type="button">Sign out</button>
 </header>
 
-<main>
-  <section class="cards" aria-label="Summary">
-    <div class="card"><div class="label">Requests seen</div><div class="value" id="c-requests">-</div></div>
-    <div class="card"><div class="label">Canary hits</div><div class="value" id="c-canary">-</div></div>
-    <div class="card"><div class="label">Alerts</div><div class="value" id="c-alerts">-</div>
-      <div class="split" id="c-alerts-note"></div></div>
-    <div class="card">
-      <div class="label">Flagged sessions</div>
-      <div class="value" id="c-flagged">-</div>
-      <div class="split">
-        <span class="tier tier-low">low <b id="c-low">0</b></span>
-        <span class="tier tier-medium">medium <b id="c-medium">0</b></span>
-        <span class="tier tier-high">high <b id="c-high">0</b></span>
-      </div>
-    </div>
-    <div class="card">
-      <div class="label">Held right now</div>
-      <div class="value" id="c-held">-</div>
-      <div class="split" id="c-held-note"></div>
-    </div>
-    <div class="card">
-      <div class="label">Attacker time burned</div>
-      <div class="value" id="c-burned">-</div>
-      <div class="split" id="c-burned-note"></div>
-      <div class="split" id="c-tokens-note"></div>
-    </div>
-    <div class="card">
-      <div class="label">Decoy</div>
-      <div class="value small" id="c-decoy">-</div>
-      <div class="split" id="c-decoy-note"></div>
-    </div>
-    <div class="card"><div class="label">Tracked sessions</div><div class="value" id="c-tracked">-</div></div>
-    <div class="card"><div class="label">Mode</div><div class="value small" id="c-mode">-</div>
-      <div class="split" id="c-rotation"></div></div>
+<main id="main">
+  <section class="panel" aria-labelledby="h-summary">
+    <h1 id="h-summary" class="panel-title">Summary</h1>
+    <dl class="stats" id="stats">
+      <div class="stat"><dt>Requests</dt><dd class="mono" id="s-requests">-</dd></div>
+      <div class="stat"><dt>Canary hits</dt><dd class="mono" id="s-canary">-</dd></div>
+      <div class="stat"><dt>Alerts</dt><dd class="mono" id="s-alerts">-</dd><dd class="note" id="n-alerts"></dd></div>
+      <div class="stat"><dt>Flagged sessions</dt><dd class="mono" id="s-flagged">-</dd><dd class="note" id="n-flagged"></dd></div>
+      <div class="stat"><dt>Held now</dt><dd class="mono" id="s-held">-</dd><dd class="note" id="n-held"></dd></div>
+      <div class="stat"><dt>Time held (measured)</dt><dd class="mono" id="s-burned">-</dd><dd class="note" id="n-burned"></dd></div>
+      <div class="stat"><dt>Trap content sent</dt><dd class="mono" id="s-bytes">-</dd><dd class="note" id="n-bytes"></dd></div>
+      <div class="stat"><dt>Decoy</dt><dd id="s-decoy">-</dd><dd class="note" id="n-decoy"></dd></div>
+      <div class="stat"><dt>Tracked sessions</dt><dd class="mono" id="s-tracked">-</dd></div>
+      <div class="stat"><dt>Mode</dt><dd id="s-mode">-</dd><dd class="note" id="n-mode"></dd></div>
+    </dl>
   </section>
 
-  <section class="panel">
+  <section class="panel" aria-labelledby="h-sessions">
     <div class="panel-head">
-      <h2>Flagged sessions</h2>
-      <span class="note">One signal only logs. Two independent kinds of evidence are needed for medium or high.</span>
+      <h2 id="h-sessions" class="panel-title">Flagged sessions</h2>
+      <p class="muted help">One signal only logs. Two independent kinds of evidence are needed for medium or high.</p>
     </div>
-    <div class="table-wrap">
-      <table>
+    <div class="toolbar">
+      <label for="session-filter">Filter</label>
+      <input id="session-filter" type="search" placeholder="Address, client, signal, campaign" autocomplete="off">
+      <label for="tier-filter">Severity</label>
+      <select id="tier-filter">
+        <option value="">All</option><option value="high">High</option><option value="medium">Medium</option>
+        <option value="low">Low</option><option value="released">Released</option>
+      </select>
+      <span class="muted mono" id="session-count" role="status" aria-live="polite"></span>
+    </div>
+    <div class="table-wrap" tabindex="0" role="region" aria-labelledby="h-sessions">
+      <table id="sessions-table">
+        <caption class="visually-hidden">Flagged sessions. Column headers with buttons sort the table.</caption>
         <thead>
-          <tr><th>Tier</th><th>Score</th><th>Phase</th><th>Address</th><th>Signals</th><th>Campaign</th><th>Client</th><th>Last seen</th><th></th></tr>
+          <tr>
+            <th scope="col" data-sort="tier" aria-sort="none"><button class="sortbtn" type="button">Severity</button></th>
+            <th scope="col" data-sort="score" aria-sort="none"><button class="sortbtn" type="button">Score</button></th>
+            <th scope="col" data-sort="phase" aria-sort="none"><button class="sortbtn" type="button">Phase</button></th>
+            <th scope="col" data-sort="ip" aria-sort="none"><button class="sortbtn" type="button">Address</button></th>
+            <th scope="col">Signals</th>
+            <th scope="col">Campaign</th>
+            <th scope="col">Client</th>
+            <th scope="col" data-sort="last_seen" aria-sort="none"><button class="sortbtn" type="button">Last seen</button></th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
         </thead>
         <tbody id="sessions"></tbody>
       </table>
-      <p class="empty" id="sessions-empty">No flagged sessions.</p>
+      <p class="state" id="sessions-state">Loading sessions</p>
     </div>
   </section>
 
-  <section class="panel" id="timeline-panel" hidden>
+  <section class="panel" id="detail" aria-labelledby="detail-title" hidden>
     <div class="panel-head">
-      <h2>Session timeline</h2>
-      <span class="note" id="timeline-summary"></span>
-      <a id="report-md" class="ghost push" href="#">Report (Markdown)</a>
-      <a id="report-json" class="ghost" href="#">Report (JSON)</a>
-      <button id="timeline-close" class="ghost" type="button">Close</button>
+      <h2 id="detail-title" class="panel-title" tabindex="-1">Session detail</h2>
+      <span class="spacer"></span>
+      <a id="report-md" class="btn" href="#" download>Incident report (Markdown)</a>
+      <a id="report-json" class="btn" href="#" download>Incident report (JSON)</a>
+      <button id="detail-close" class="btn" type="button">Close</button>
     </div>
-    <div class="playbook" id="playbook"></div>
-    <ol class="feed" id="timeline"></ol>
-    <p class="empty" id="timeline-empty" hidden>No recorded events for this session.</p>
-  </section>
-
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Tiring level</h2>
-      <span class="note">How hard trapped sessions are slowed. It never changes who gets trapped.</span>
-    </div>
-    <div class="settings">
-      <div class="levels" id="levels" role="group" aria-label="Tiring level">
-        <button type="button" class="level" data-level="1">1<small>gentle</small></button>
-        <button type="button" class="level" data-level="2">2<small>mild</small></button>
-        <button type="button" class="level" data-level="3">3<small>default</small></button>
-        <button type="button" class="level" data-level="4">4<small>heavy</small></button>
-        <button type="button" class="level" data-level="5">5<small>maximum</small></button>
-      </div>
-      <p class="note" id="level-note"></p>
-      <details>
-        <summary>Advanced settings</summary>
-        <form id="settings-form" class="fields" novalidate>
-          <label>First delay (seconds)
-            <input type="number" name="tarpit.base_delay" min="0.1" max="60" step="0.1"></label>
-          <label>Longest delay (seconds)
-            <input type="number" name="tarpit.max_delay" min="0.1" max="300" step="0.1"></label>
-          <label>Longest delay, medium tier (seconds)
-            <input type="number" name="tarpit.light_max_delay" min="0.1" max="300" step="0.1"></label>
-          <label>Sessions held at once
-            <input type="number" name="tarpit.max_sessions" min="10" max="100000" step="1"></label>
-          <label>Rabbit-hole depth (levels)
-            <input type="number" name="maze.rabbit_depth" min="1" max="12" step="1"></label>
-          <label>Redirect chance, high tier (0-1)
-            <input type="number" name="maze.redirect_chance" min="0" max="1" step="0.01"></label>
-          <label>Score for medium tier
-            <input type="number" name="detection.medium_threshold" min="1" max="100" step="1"></label>
-          <label>Score for high tier
-            <input type="number" name="detection.trap_threshold" min="1" max="100" step="1"></label>
-          <label class="check"><input type="checkbox" name="tarpit.enabled"> Tarpit on</label>
-          <label class="check"><input type="checkbox" name="tarpit.adaptive"> Adaptive difficulty
-            (trapped sessions only)</label>
-          <div class="actions">
-            <button type="submit" class="primary">Save</button>
-            <span id="settings-message" role="status"></span>
-          </div>
-        </form>
-      </details>
+    <dl class="facts" id="facts"></dl>
+    <h3 class="sub">Playbook</h3>
+    <ol class="playbook" id="playbook"></ol>
+    <p class="note-line" id="playbook-note"></p>
+    <h3 class="sub">Linked sessions</h3>
+    <ul class="linked" id="linked"></ul>
+    <h3 class="sub">Timeline</h3>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="Session timeline">
+      <table>
+        <caption class="visually-hidden">Events recorded for this session, oldest first.</caption>
+        <thead><tr><th scope="col">Time</th><th scope="col">Severity</th><th scope="col">Event</th><th scope="col">Request</th></tr></thead>
+        <tbody id="timeline"></tbody>
+      </table>
+      <p class="state" id="timeline-state"></p>
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" aria-labelledby="h-level">
+    <h2 id="h-level" class="panel-title">Tiring level</h2>
+    <p class="muted help">How hard trapped sessions are slowed. It never changes who gets trapped.</p>
+    <form id="level-form" class="settings">
+      <fieldset class="levels">
+        <legend>Level</legend>
+        <label class="level"><input type="radio" name="level" value="1"><span>1 Gentle</span></label>
+        <label class="level"><input type="radio" name="level" value="2"><span>2 Mild</span></label>
+        <label class="level"><input type="radio" name="level" value="3"><span>3 Default</span></label>
+        <label class="level"><input type="radio" name="level" value="4"><span>4 Heavy</span></label>
+        <label class="level"><input type="radio" name="level" value="5"><span>5 Maximum</span></label>
+      </fieldset>
+    </form>
+    <p class="muted" id="level-note"></p>
+    <p class="note-line" id="level-message" role="status" aria-live="polite"></p>
+    <details class="advanced">
+      <summary>Advanced settings</summary>
+      <form id="settings-form" class="fields" novalidate>
+        <div class="field"><label for="f-base">First delay (seconds)</label>
+          <input id="f-base" name="tarpit.base_delay" type="number" min="0.1" max="60" step="0.1" inputmode="decimal"></div>
+        <div class="field"><label for="f-max">Longest delay (seconds)</label>
+          <input id="f-max" name="tarpit.max_delay" type="number" min="0.1" max="300" step="0.1" inputmode="decimal"></div>
+        <div class="field"><label for="f-light">Longest delay, medium tier (seconds)</label>
+          <input id="f-light" name="tarpit.light_max_delay" type="number" min="0.1" max="300" step="0.1" inputmode="decimal"></div>
+        <div class="field"><label for="f-sessions">Sessions held at once</label>
+          <input id="f-sessions" name="tarpit.max_sessions" type="number" min="10" max="100000" step="1" inputmode="numeric"></div>
+        <div class="field"><label for="f-depth">Rabbit-hole depth (levels)</label>
+          <input id="f-depth" name="maze.rabbit_depth" type="number" min="1" max="12" step="1" inputmode="numeric"></div>
+        <div class="field"><label for="f-redirect">Redirect chance, high tier (0 to 1)</label>
+          <input id="f-redirect" name="maze.redirect_chance" type="number" min="0" max="1" step="0.01" inputmode="decimal"></div>
+        <div class="field"><label for="f-medium">Score for medium tier</label>
+          <input id="f-medium" name="detection.medium_threshold" type="number" min="1" max="100" step="1" inputmode="numeric"></div>
+        <div class="field"><label for="f-high">Score for high tier</label>
+          <input id="f-high" name="detection.trap_threshold" type="number" min="1" max="100" step="1" inputmode="numeric"></div>
+        <div class="field check"><input id="f-enabled" name="tarpit.enabled" type="checkbox"><label for="f-enabled">Tarpit on</label></div>
+        <div class="field check"><input id="f-adaptive" name="tarpit.adaptive" type="checkbox"><label for="f-adaptive">Adaptive difficulty (trapped sessions only)</label></div>
+        <div class="actions">
+          <button type="submit" class="btn primary">Save settings</button>
+          <span id="settings-message" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+    </details>
+  </section>
+
+  <section class="panel" aria-labelledby="h-feed">
     <div class="panel-head">
-      <h2>Live events</h2>
-      <label class="check"><input type="checkbox" id="alerts-only"> Alerts only</label>
+      <h2 id="h-feed" class="panel-title">Live events</h2>
+      <span class="spacer"></span>
+      <label for="feed-filter" class="visually-hidden">Filter events</label>
+      <input id="feed-filter" type="search" placeholder="Filter events" autocomplete="off">
+      <label class="check-inline"><input type="checkbox" id="alerts-only"> Alerts only</label>
     </div>
-    <ol class="feed" id="feed" aria-live="off"></ol>
-    <p class="empty" id="feed-empty">Nothing yet. Events appear here as they happen.</p>
+    <div class="table-wrap" tabindex="0" role="region" aria-labelledby="h-feed">
+      <table>
+        <caption class="visually-hidden">Recent events, newest first.</caption>
+        <thead><tr><th scope="col">Time</th><th scope="col">Severity</th><th scope="col">Event</th><th scope="col">Request</th></tr></thead>
+        <tbody id="feed"></tbody>
+      </table>
+      <p class="state" id="feed-state">Loading events</p>
+    </div>
   </section>
 </main>
-
 <script src="/static/app.js"></script>
 </body>
 </html>

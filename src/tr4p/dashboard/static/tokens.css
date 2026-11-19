@@ -1,0 +1,43 @@
+/* Design tokens and base rules shared by every dashboard page.
+   One neutral palette, one accent, four severity pairs. All text colours
+   meet WCAG AA contrast on the surfaces they are used on, in both schemes. */
+:root {
+  color-scheme: light dark;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --text-xs: 12px; --text-sm: 13px; --text-md: 14px; --text-lg: 16px; --text-xl: 20px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 4px;
+  --bg: #f5f6f8; --surface: #ffffff; --surface-2: #eef0f3; --border: #cfd5dc;
+  --text: #1b1f24; --muted: #4b5563; --accent: #1d4ed8; --accent-text: #ffffff; --focus: #1d4ed8;
+  --none-fg: #374151; --none-bg: #eceff3;
+  --low-fg: #14506e; --low-bg: #e1eff7;
+  --med-fg: #7a4a00; --med-bg: #fdefd0;
+  --high-fg: #8a1622; --high-bg: #fbe1e4;
+  --ok: #14663a; --bad: #8a1622;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1217; --surface: #151a21; --surface-2: #1c222a; --border: #2f3742;
+    --text: #e7eaee; --muted: #a9b2bd; --accent: #7db0ff; --accent-text: #0a1220; --focus: #7db0ff;
+    --none-fg: #c3cad3; --none-bg: #252c35;
+    --low-fg: #8fcaf0; --low-bg: #12303f;
+    --med-fg: #f2c777; --med-bg: #3b2c0b;
+    --high-fg: #ffa9b0; --high-bg: #4b171d;
+    --ok: #6fd49a; --bad: #ffa9b0;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: var(--text-md)/1.5 var(--font); }
+.mono { font-family: var(--mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .6; }
+.icon { width: 14px; height: 14px; flex: none; fill: currentColor; vertical-align: -2px; }
