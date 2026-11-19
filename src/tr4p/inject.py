@@ -80,6 +80,19 @@ def build_snippet(
         else:
             parts.append(f"<template><nav>{''.join(anchors)}</nav></template>")
 
+    # More ways to leave a trail, each invisible and inert: a script reference
+    # inside <template> (never loaded), a form that is hidden (never shown,
+    # never reachable by keyboard), and a source-map hint in a comment.
+    extras = rng.sample(("script", "form", "map"), rng.randrange(1, 3))
+    if "script" in extras and canaries.bundle_path:
+        parts.append(f'<template><script src="{escape(canaries.bundle_path, quote=True)}"></script></template>')
+    if "form" in extras and canaries.api_paths:
+        action = escape(rng.choice(canaries.api_paths), quote=True)
+        parts.append(f'{_HIDDEN_OPEN}<form action="{action}" method="post">'
+                     '<input type="hidden" name="scope" value="all"></form></div>')
+    if "map" in extras and canaries.bundle_path:
+        parts.append(f"<!-- build: //# sourceMappingURL={canaries.bundle_path.replace('--', '-')}.map -->")
+
     comment_path = rng.choice(canaries.comment_paths + canaries.doc_paths)
     comment = rng.choice(_COMMENTS).format(path=comment_path, n=rng.randrange(100, 9999))
     parts.append(f"<!-- {comment.replace('--', '-')} -->")

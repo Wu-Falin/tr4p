@@ -8,7 +8,7 @@ honeytokens, so using one anywhere on the site is itself a detection.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import formatdate
 from html import escape
 
@@ -41,6 +41,7 @@ class Loot:
     location: str = ""          # set for redirects
     request_id: str = ""        # set when the answer was varied per request
     index: bool = False         # a discovery document (reading it is context, not a signal)
+    headers: dict = field(default_factory=dict)   # extra response headers
 
 
 class LootFactory:
@@ -49,6 +50,7 @@ class LootFactory:
         self._tokens = honeytokens
         self._persona = persona
         self._session: str | None = None
+        self.api_paths = lambda: ()      # set by the maze: endpoints the discovery documents list
         # Where bait files say the admin area is. Set by the maze.
         self.admin_path = lambda: ""
 
@@ -65,6 +67,9 @@ class LootFactory:
         lowered = path.lower()
         rng = self._seed.rng("loot", path)
 
+        special = self._special(name.lower(), lowered, domain, rng)
+        if special is not None:
+            return special
         if lowered.endswith(_BINARY_ENDINGS):
             return None
         if path.endswith("/") or "." not in name:
@@ -123,6 +128,139 @@ class LootFactory:
         else:
             etag = f'"{modified:x}-{size:x}"'
         return formatdate(modified, usegmt=True), etag
+
+    # ------------------------------------------------------- bait library
+
+    def _special(self, key: str, lowered: str, domain: str, rng) -> Loot | None:
+        """Bait with a shape of its own: server status pages, deployment and
+        pipeline files, state and collection exports, a script bundle and its
+        source map. Everything is invented; secrets are issued per session."""
+        slug = self._slug()
+        text = None
+        ctype = "text/plain"
+        if key in ("server-status", "server-info"):
+            return Loot(200, "text/html", self._server_status(rng).encode("ascii", "replace"))
+        if key in ("phpinfo.php", "info.php"):
+            return Loot(200, "text/html", self._phpinfo().encode("ascii", "replace"))
+        if lowered.endswith("/actuator/env"):
+            text, ctype = self._actuator_env(), "application/json"
+        elif key == "health":
+            text, ctype = json.dumps({"status": "UP", "components": {
+                "db": {"status": "UP"}, "diskSpace": {"status": "UP", "details": {"free": 41873203200}}}},
+                indent=2), "application/json"
+        elif key in ("docker-compose.yml", "docker-compose.yaml"):
+            text = self._compose(domain, slug)
+        elif key in (".gitlab-ci.yml", ".travis.yml", "azure-pipelines.yml", "jenkinsfile"):
+            text = self._pipeline(domain, slug, key)
+        elif key == "package.json":
+            text, ctype = self._package_json(domain, slug), "application/json"
+        elif key == "postman_collection.json" or ("postman" in key and key.endswith(".json")):
+            text, ctype = self._postman(slug), "application/json"
+        elif key.endswith((".tfstate", ".tfstate.backup")):
+            text, ctype = self._tfstate(domain, slug, rng), "application/json"
+        elif key in ("error_log", "trace", "_debug"):
+            text = self._trace(domain, slug)
+        elif lowered.endswith(".js.map"):
+            text, ctype = self._source_map(key[:-4]), "application/json"
+        elif lowered.endswith(".js"):
+            text, ctype = self._bundle(key), "application/javascript"
+        if text is None:
+            return None
+        return Loot(200, ctype, text.encode("ascii", "replace"), True)
+
+    def _endpoints(self) -> list[str]:
+        return list(self.api_paths()) or ["/api/v1/users", "/api/v1/export"]
+
+    def _server_status(self, rng) -> str:
+        paths = self._endpoints() + ["/", "/login", "/static/site.css"]
+        if self._persona.family == "apache":
+            rows = "".join(
+                f"<tr><td>{n}</td><td>198.51.100.{rng.randrange(2, 250)}</td>"
+                f"<td>GET {escape(rng.choice(paths))} HTTP/1.1</td></tr>" for n in range(1, 7))
+            return (f"<html><head><title>Apache Status</title></head><body><h1>Apache Server Status</h1>"
+                    f"<p>Server Version: {escape(self._persona.server_header)}</p><p>Server MPM: event</p>"
+                    f"<p>Server uptime: {rng.randrange(2, 40)} days {rng.randrange(24)} hours</p>"
+                    f"<p>{rng.randrange(1, 9)} requests currently being processed</p>"
+                    f"<table><tr><th>#</th><th>Client</th><th>Request</th></tr>{rows}</table></body></html>\n")
+        return (f"<html><body><pre>Active connections: {rng.randrange(8, 90)}\n"
+                f"server accepts handled requests\n {rng.randrange(10**4, 10**6)} "
+                f"{rng.randrange(10**4, 10**6)} {rng.randrange(10**5, 10**6)}\n"
+                f"Reading: 0 Writing: {rng.randrange(1, 5)} Waiting: {rng.randrange(5, 40)}</pre></body></html>\n")
+
+    def _phpinfo(self) -> str:
+        rows = (("PHP Version", "8.2.18"), ("System", "Linux web01 5.15.0 x86_64"),
+                ("Server API", "FPM/FastCGI"), ("DOCUMENT_ROOT", "/var/www/html"),
+                ("DB_HOST", "127.0.0.1"), ("DB_PASSWORD", self._tok("db_password")),
+                ("SMTP_PASSWORD", self._tok("smtp_password")))
+        body = "".join(f"<tr><td>{escape(a)}</td><td>{escape(b)}</td></tr>" for a, b in rows)
+        return f"<html><head><title>phpinfo()</title></head><body><h1>PHP Version 8.2.18</h1><table>{body}</table></body></html>\n"
+
+    def _actuator_env(self) -> str:
+        values = {"DB_PASSWORD": self._tok("db_password"), "JWT_SECRET": self._tok("jwt_secret"),
+                  "AWS_SECRET_ACCESS_KEY": self._tok("cloud_secret_key"), "SPRING_PROFILES_ACTIVE": "production"}
+        return json.dumps({"activeProfiles": ["production"], "propertySources": [{
+            "name": "systemEnvironment", "properties": {k: {"value": v} for k, v in values.items()}}]}, indent=2)
+
+    def _compose(self, domain: str, slug: str) -> str:
+        return (f"services:\n  web:\n    image: registry.{domain}/{slug}/web:1.4.2\n    environment:\n"
+                f"      - DB_HOST=db\n      - DB_PASSWORD={self._tok('db_password')}\n"
+                f"      - JWT_SECRET={self._tok('jwt_secret')}\n    ports:\n      - \"8080:8080\"\n"
+                f"  db:\n    image: mysql:8.0\n    environment:\n"
+                f"      MYSQL_ROOT_PASSWORD: {self._tok('db_password')}\n")
+
+    def _pipeline(self, domain: str, slug: str, key: str) -> str:
+        if key == "jenkinsfile":
+            return (f"pipeline {{\n  agent any\n  environment {{\n"
+                    f"    DEPLOY_TOKEN = '{self._tok('deploy_token')}'\n  }}\n  stages {{\n"
+                    f"    stage('Deploy') {{ steps {{ sh 'curl -H \"Authorization: Bearer $DEPLOY_TOKEN\" https://deploy.{domain}/api/releases' }} }}\n  }}\n}}\n")
+        return (f"stages:\n  - test\n  - deploy\n\ndeploy:\n  stage: deploy\n  variables:\n"
+                f"    AWS_ACCESS_KEY_ID: {self._tok('cloud_access_key')}\n"
+                f"    AWS_SECRET_ACCESS_KEY: {self._tok('cloud_secret_key')}\n  script:\n"
+                f"    - curl -H \"Authorization: Bearer {self._tok('deploy_token')}\" https://deploy.{domain}/api/releases\n")
+
+    def _package_json(self, domain: str, slug: str) -> str:
+        return json.dumps({"name": slug + "-web", "version": "1.4.2", "private": True,
+                           "scripts": {"build": "webpack --mode production",
+                                       "deploy": f"node scripts/deploy.js --host deploy.{domain}"},
+                           "config": {"registryToken": self._tok("deploy_token")}}, indent=2)
+
+    def _postman(self, slug: str) -> str:
+        items = [{"name": p.rsplit("/", 1)[-1], "request": {"method": "GET", "header": [
+            {"key": "X-Api-Key", "value": self._tok("api_key")}], "url": {"raw": "{{base}}" + p}}}
+            for p in self._endpoints()[:5]]
+        return json.dumps({"info": {"name": slug + " internal API",
+                                    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+                           "item": items}, indent=2)
+
+    def _tfstate(self, domain: str, slug: str, rng) -> str:
+        return json.dumps({"version": 4, "terraform_version": "1.7.5", "serial": rng.randrange(20, 400),
+                           "resources": [{"type": "aws_db_instance", "name": slug, "instances": [{"attributes": {
+                               "address": f"db.{domain}", "username": slug + "_app",
+                               "password": self._tok("db_password"), "engine": "mysql"}}]}]}, indent=2)
+
+    def _trace(self, domain: str, slug: str) -> str:
+        return (f"java.sql.SQLException: Access denied for user '{slug}_app'@'198.51.100.7' (using password: YES)\n"
+                f"    at com.{slug}.db.Pool.connect(Pool.java:88)\n"
+                f"    at com.{slug}.web.OrderController.list(OrderController.java:41)\n"
+                f"connection string: jdbc:mysql://db.{domain}:3306/{slug}_prod?user={slug}_app"
+                f"&password={self._tok('db_password')}\n")
+
+    def _bundle(self, name: str) -> str:
+        endpoints = self._endpoints()
+        config = {"apiBase": endpoints[0].rsplit("/", 1)[0], "mapsKey": self._tok("api_key"),
+                  "storageKey": self._tok("cloud_access_key"), "endpoints": endpoints}
+        return (f"!function(){{window.__APP_CONFIG__={json.dumps(config, separators=(',', ':'))};}}();\n"
+                f"//# sourceMappingURL={name}.map\n")
+
+    def _source_map(self, name: str) -> str:
+        endpoints = self._endpoints()
+        sources = {"webpack:///./src/config.js":
+                   f"export const API_BASE = '{endpoints[0].rsplit('/', 1)[0]}';\n"
+                   f"export const MAPS_KEY = '{self._tok('api_key')}';\n",
+                   "webpack:///./src/api.js":
+                   "".join(f"export const {p.rsplit('/', 1)[-1]} = () => fetch('{p}');\n" for p in endpoints)}
+        return json.dumps({"version": 3, "file": name, "sources": list(sources),
+                           "sourcesContent": list(sources.values()), "names": [], "mappings": "AAAA"}, indent=1)
 
     # ------------------------------------------------------------------ pieces
 

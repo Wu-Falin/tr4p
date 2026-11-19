@@ -7,6 +7,10 @@ from tr4p.inject import build_snippet, can_inject, inject, merge_robots
 from tr4p.seed import Seed
 
 
+INTERACTIVE = {"a", "form", "input", "button", "select", "textarea", "iframe", "img",
+               "link", "object", "embed", "video", "audio"}
+
+
 class Audit(HTMLParser):
     """Checks that everything in a snippet is hidden from people."""
 
@@ -15,30 +19,35 @@ class Audit(HTMLParser):
         self.stack = []
         self.problems = []
         self.links = []
+        self.references = []
 
     def _hidden(self):
         return any(hidden for _, hidden in self.stack)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        inside_template = any(name == "template" for name, _ in self.stack)
         hidden = tag in ("template", "script") or (
             "hidden" in attrs
             and attrs.get("aria-hidden") == "true"
             and "display:none" in attrs.get("style", "")
         )
         self.stack.append((tag, hidden))
-        if tag == "script" and attrs.get("type") != "application/json":
-            self.problems.append("executable script")
+        if tag == "script" and attrs.get("type") != "application/json" and not inside_template:
+            self.problems.append("executable script outside a template")
+        if tag in INTERACTIVE and not self._hidden():
+            self.problems.append(f"visible or reachable <{tag}>")
         if tag == "a":
             self.links.append(attrs)
-            if not self._hidden():
-                self.problems.append("visible link")
             if attrs.get("tabindex") != "-1":
                 self.problems.append("link reachable by keyboard")
             if "nofollow" not in attrs.get("rel", ""):
                 self.problems.append("link without nofollow")
             if attrs.get("aria-hidden") != "true":
                 self.problems.append("link exposed to screen readers")
+        for name in ("href", "src", "action"):
+            if attrs.get(name):
+                self.references.append(attrs[name])
 
     def handle_endtag(self, tag):
         while self.stack:
@@ -145,3 +154,27 @@ def test_merge_robots_handles_stacked_agents_and_comments():
     upstream = "User-Agent: * # everyone\nUser-agent: other\nAllow: /\n"
     lines = merge_robots(upstream, ("/a/",)).splitlines()
     assert lines == ["User-Agent: * # everyone", "User-agent: other", "Disallow: /a/", "Allow: /"]
+
+
+def test_every_placement_stays_invisible_and_inside_disallowed_directories():
+    """Real visitors and screen readers never see or reach any placement, and
+    every path they carry lies under a directory robots.txt disallows, so
+    search crawlers stay away."""
+    import re
+
+    placements = set()
+    for seed_byte in range(1, 80):
+        for page in ("/", "/a", "/b/c"):
+            snippet, current, _ = snippet_for(seed_byte, page)
+            text = snippet.decode("ascii")
+            audit = Audit()
+            audit.feed(text)
+            assert audit.problems == [], (seed_byte, page, audit.problems)
+            paths = audit.references + re.findall(r"sourceMappingURL=(\S+)", text)
+            assert paths
+            for path in paths:
+                assert path.split("?")[0].startswith(current.disallow), path
+            for name, marker in (("script", "<script src="), ("form", "<form"), ("map", "sourceMappingURL")):
+                if marker in text:
+                    placements.add(name)
+    assert placements == {"script", "form", "map"}                   # every placement was exercised

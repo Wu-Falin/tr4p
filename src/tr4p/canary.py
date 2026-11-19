@@ -75,6 +75,8 @@ BAIT_ALWAYS = frozenset({
     "/telescope/requests", "/debug/default/view", "/config.json.bak",
     "/credentials.json", "/secrets.json", "/secrets.yml", "/private.key",
     "/server.key", "/.well-known/security.bak",
+    "/.gitlab-ci.yml", "/.travis.yml", "/Jenkinsfile", "/azure-pipelines.yml",
+    "/terraform.tfstate", "/terraform.tfstate.backup", "/postman_collection.json", "/error_log",
 })
 
 # Admin tools that some real sites do run. Only a signal when the upstream
@@ -108,6 +110,7 @@ class CanarySet:
     instruction_path: str
     api_paths: tuple[str, ...] = ()   # endpoints the discovery documents list
     doc_paths: tuple[str, ...] = ()   # discovery documents in the comment directory
+    bundle_path: str = ""             # a made-up script bundle (its source map sits beside it)
 
     @property
     def disallow(self) -> tuple[str, ...]:
@@ -194,6 +197,7 @@ class Canaries:
             instruction_path=instruction,
             api_paths=tuple(f"/{segments[KIND_API]}/v1/{name}" for name in rng.sample(_API_NAMES, 8)),
             doc_paths=tuple(f"/{segments[KIND_COMMENT]}/{name}" for name in rng.sample(DOC_FILES, 2)),
+            bundle_path=f"/{segments[KIND_LINK]}/static/app.min.js",
         )
 
     def _refresh(self) -> None:
