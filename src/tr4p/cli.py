@@ -60,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     which = purge.add_mutually_exclusive_group(required=True)
     which.add_argument("--days", type=float, help="delete everything older than this many days")
     which.add_argument("--all", action="store_true", help="delete everything")
+    report = commands.add_parser("report", help="print an incident report for one session")
+    report.add_argument("session", help="session id, or its first characters")
+    report.add_argument("--format", choices=("md", "json"), default="md")
     schema = commands.add_parser(
         "schema", help="give the decoy your table and column names (never any data)")
     schema.add_argument("file", type=Path, help="SQL schema dump without data rows")
@@ -75,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
             return _passwd(home)
         if args.command == "schema":
             return _schema(home, args.file)
+        if args.command == "report":
+            return _report(home, args.session, args.format)
         if args.command == "doctor":
             from tr4p.doctor import run_doctor
             return run_doctor(home)
@@ -256,6 +261,29 @@ def _passwd(home: Path) -> int:
         return 1
     _store_password(home, password)
     print("Dashboard password updated. Restart the service to sign out existing sessions.")
+    return 0
+
+
+def _report(home: Path, prefix: str, fmt: str) -> int:
+    import time
+
+    from tr4p.report import build_report, to_json, to_markdown
+
+    Config.load(home / CONFIG_FILE)
+    store = Store(home / DATABASE_FILE)
+    store.open()
+    try:
+        found = [s for s in store.sessions(since=0.0, limit=5000) if s["key"].startswith(prefix)]
+        if len(found) != 1:
+            print(f"error: {'no session' if not found else 'several sessions'} match {prefix!r}",
+                  file=sys.stderr)
+            return 1
+        events = store.events(limit=500, session=found[0]["key"])
+    finally:
+        store.close()
+    events.reverse()
+    report = build_report(found[0], events, time.time())
+    sys.stdout.write(to_json(report) if fmt == "json" else to_markdown(report))
     return 0
 
 

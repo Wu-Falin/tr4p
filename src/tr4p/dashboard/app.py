@@ -41,6 +41,7 @@ from tr4p.dashboard.auth import (
 )
 from tr4p.engine import Engine
 from tr4p.levels import PRESETS, level_of, preset_changes
+from tr4p.report import build_report, to_json, to_markdown
 from tr4p.store import Store
 
 log = logging.getLogger("tr4p.dashboard")
@@ -146,6 +147,7 @@ class Dashboard:
         add.add_get("/api/v1/sessions", self._api_sessions)
         add.add_post("/api/v1/sessions/release", self._api_release)
         add.add_get("/api/v1/sessions/timeline", self._api_timeline)
+        add.add_get("/api/v1/sessions/report", self._api_report)
         add.add_get("/api/v1/settings", self._api_settings)
         add.add_post("/api/v1/settings", self._api_settings_update)
         add.add_get("/api/v1/stream", self._api_stream)
@@ -383,6 +385,24 @@ class Dashboard:
         row["groups"] = sorted(scoring.evidence_groups(session.signals))
         return _json({"instance": self._instance(), "session": row, "events": events,
                       "truncated": len(events) >= TIMELINE_LIMIT})
+
+    async def _api_report(self, request: web.Request) -> web.StreamResponse:
+        """Incident report for one session, as JSON or Markdown."""
+        key = request.query.get("key", "")[:80]
+        session = self._engine.sessions.get(key) if key else None
+        if session is None:
+            return _json({"error": "unknown session"}, 404)
+        events = await self._store.events_async(limit=TIMELINE_LIMIT, session=key)
+        events.reverse()
+        report = build_report(session.snapshot(), events, time.time())
+        name = "incident-" + "".join(ch for ch in key if ch.isalnum())[:12]
+        if request.query.get("format") == "md":
+            return web.Response(text=to_markdown(report), content_type="text/markdown", charset="utf-8",
+                                headers={"Content-Disposition": f'attachment; filename="{name}.md"'})
+        response = web.Response(text=to_json(report), content_type="application/json", charset="utf-8")
+        if request.query.get("download"):
+            response.headers["Content-Disposition"] = f'attachment; filename="{name}.json"'
+        return response
 
     # ----------------------------------------------------------------- settings
 

@@ -42,6 +42,7 @@
       <div class="label">Attacker time burned</div>
       <div class="value" id="c-burned">-</div>
       <div class="split" id="c-burned-note"></div>
+      <div class="split" id="c-tokens-note"></div>
     </div>
     <div class="card">
       <div class="label">Decoy</div>
@@ -73,8 +74,11 @@
     <div class="panel-head">
       <h2>Session timeline</h2>
       <span class="note" id="timeline-summary"></span>
-      <button id="timeline-close" class="ghost push" type="button">Close</button>
+      <a id="report-md" class="ghost push" href="#">Report (Markdown)</a>
+      <a id="report-json" class="ghost" href="#">Report (JSON)</a>
+      <button id="timeline-close" class="ghost" type="button">Close</button>
     </div>
+    <div class="playbook" id="playbook"></div>
     <ol class="feed" id="timeline"></ol>
     <p class="empty" id="timeline-empty" hidden>No recorded events for this session.</p>
   </section>

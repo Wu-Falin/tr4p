@@ -101,6 +101,9 @@
       ? decoy.profile + " \u00b7 " + (decoy.served || 0) + " served \u00b7 " +
         (decoy.touches || 0) + " sensitive \u00b7 " + (decoy.restarts || 0) + " restarts"
       : "high tier stays on the tarpit";
+    el("c-tokens-note").textContent = "sent " + Math.round((stats.trap_bytes || 0) / 1024).toLocaleString() +
+      " KB (measured) \u00b7 about " + Math.round((stats.trap_bytes || 0) / 4).toLocaleString() +
+      " tokens (estimate: bytes \u00f7 4)";
     const notices = status.alerts || {};
     el("c-alerts-note").textContent = notices.configured
       ? notices.sent + " sent \u00b7 " + notices.suppressed + " held back \u00b7 " + notices.failed + " failed"
@@ -233,7 +236,32 @@
     el("timeline-empty").hidden = data.events.length > 0;
     el("timeline-panel").hidden = false;
     el("timeline-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const links = "?key=" + encodeURIComponent(key);
+    el("report-md").href = "/api/v1/sessions/report" + links + "&format=md";
+    el("report-json").href = "/api/v1/sessions/report" + links + "&download=1";
+    renderPlaybook(key);
     loadSessions().catch(function () { /* ignored */ });
+  }
+
+  async function renderPlaybook(key) {
+    const box = el("playbook");
+    box.replaceChildren();
+    try {
+      const report = await api("/api/v1/sessions/report?key=" + encodeURIComponent(key));
+      report.stages.forEach(function (stage) {
+        const line = node("p");
+        line.appendChild(node("strong", "", stage.stage + ": "));
+        line.appendChild(document.createTextNode(Object.keys(stage.signals).sort().map(function (name) {
+          return name + " \u00d7" + stage.signals[name];
+        }).join(", ")));
+        box.appendChild(line);
+      });
+      const m = report.metrics;
+      box.appendChild(node("p", "", "Held " + m.held_seconds + " s and sent " + m.bytes_sent +
+        " bytes (measured); about " + m.estimated_tokens + " tokens (estimate: bytes \u00f7 4)."));
+    } catch (error) {
+      box.appendChild(node("p", "", "Playbook unavailable."));
+    }
   }
 
   function hideTimeline() {

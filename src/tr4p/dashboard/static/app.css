@@ -77,6 +77,11 @@ td.client { max-width: 280px; color: var(--muted); overflow-wrap: anywhere; }
 .feed .meta { grid-column: 3; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
 
 .push { margin-left: auto; }
+a.ghost { padding: 5px 12px; color: var(--text); text-decoration: none; border: 1px solid var(--line); border-radius: 6px; }
+a.ghost:hover { border-color: var(--muted); }
+.playbook { padding: 10px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+.playbook strong { color: var(--text); }
+.playbook p { margin: 2px 0; }
 .settings { padding: 16px; display: grid; gap: 12px; }
 .levels { display: flex; flex-wrap: wrap; gap: 8px; }
 .level {
