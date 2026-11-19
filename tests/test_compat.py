@@ -98,3 +98,9 @@ def test_config_with_windows_line_endings_loads():
         Config().save(path)
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
         assert Config.load(path).public.port == Config().public.port
+
+
+def test_path_hint_survives_python_builds_without_a_user_scheme():
+    with mock.patch("tr4p.doctor.sysconfig.get_path", side_effect=KeyError("osx_user")):
+        hint = doctor._path_hint()
+    assert "PATH" in hint and "KeyError" not in hint

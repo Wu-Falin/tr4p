@@ -11,6 +11,7 @@ import ipaddress
 import os
 import platform
 import shutil
+import site
 import sys
 import sysconfig
 from pathlib import Path
@@ -77,14 +78,13 @@ def _platform(report: Report) -> None:
 
 
 def _path_hint() -> str:
-    scripts = Path(sysconfig.get_path("scripts", scheme=_user_scheme()))
+    try:
+        scripts = Path(sysconfig.get_path("scripts", scheme=sysconfig.get_preferred_scheme("user")))
+    except Exception:   # some builds (Homebrew, framework) lack the scheme
+        scripts = Path(site.getuserbase()) / ("Scripts" if sys.platform == "win32" else "bin")
     if sys.platform == "win32":
-        return f'Add {scripts} to PATH (Settings > System > About > Advanced system settings > Environment Variables).'
+        return f"Add {scripts} to PATH (Settings > System > About > Advanced system settings > Environment Variables)."
     return f'Add it with: export PATH="{scripts}:$PATH"  (put that line in ~/.profile or your shell rc file), or use pipx.'
-
-
-def _user_scheme() -> str:
-    return {"win32": "nt_user", "darwin": "osx_user"}.get(sys.platform, "posix_user")
 
 
 def _files(home: Path, report: Report) -> None:

@@ -9,7 +9,7 @@ if [ "$(id -u)" = "0" ]; then
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 python3-venv python3-pip >/dev/null
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q python3 python3-pip >/dev/null
+    dnf install -y -q python3 python3-pip util-linux >/dev/null
   elif command -v apk >/dev/null 2>&1; then
     apk add --quiet python3 py3-pip
   fi
