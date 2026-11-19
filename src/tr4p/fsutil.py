@@ -7,6 +7,7 @@ source tree. Files are created owner-only (0600) and written atomically.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -30,9 +31,30 @@ def default_home() -> Path:
     return root / "tr4p"
 
 
+def restrict_windows(path: Path, directory: bool) -> bool:
+    """Windows equivalent of chmod 600/700: drop inherited permissions and
+    grant the current user alone full control, using the icacls tool that
+    ships with Windows. Returns False when it could not be done."""
+    user = os.environ.get("USERNAME")
+    if not user:
+        return False
+    grant = f"{user}:(OI)(CI)F" if directory else f"{user}:F"
+    try:
+        done = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", grant],
+            capture_output=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 def ensure_private_dir(path: Path) -> None:
-    """Create a directory only its owner can enter (best effort on Windows)."""
+    """Create a directory only its owner can enter."""
     path.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        restrict_windows(path, directory=True)
+        return
     try:
         os.chmod(path, 0o700)
     except OSError:
@@ -48,10 +70,13 @@ def write_private(path: Path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        try:
-            os.chmod(tmp_name, 0o600)
-        except OSError:
-            pass
+        if sys.platform == "win32":
+            restrict_windows(Path(tmp_name), directory=False)
+        else:
+            try:
+                os.chmod(tmp_name, 0o600)
+            except OSError:
+                pass
         os.replace(tmp_name, path)
     except BaseException:
         try:
@@ -61,11 +86,23 @@ def write_private(path: Path, data: bytes) -> None:
         raise
 
 
+def windows_acl_open(path: Path) -> bool:
+    """True when a Windows ACL grants access to broad groups (Everyone, Users,
+    Authenticated Users). Unknown results count as not open."""
+    try:
+        done = subprocess.run(["icacls", str(path)], capture_output=True, text=True,
+                              timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    text = done.stdout or ""
+    return any(name in text for name in ("Everyone:", "BUILTIN\\Users:", "Authenticated Users:"))
+
+
 def is_private(path: Path) -> bool:
-    """True when group and others have no access. Always True on Windows,
-    where POSIX mode bits do not describe the real ACL."""
+    """True when group and others have no access. On Windows the real ACL is
+    inspected instead of POSIX mode bits."""
     if sys.platform == "win32":
-        return True
+        return not windows_acl_open(path)
     try:
         return (path.stat().st_mode & 0o077) == 0
     except OSError:

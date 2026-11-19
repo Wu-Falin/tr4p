@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
+import platform
+import shutil
+import sys
+import sysconfig
 from pathlib import Path
 
 from tr4p.config import CONFIG_FILE, DATABASE_FILE, SEED_FILE, Config, ConfigError
@@ -40,6 +45,7 @@ def run_doctor(home: Path) -> int:
     except ConfigError as exc:
         report.fail(f"config: {exc}")
         return 1
+    _platform(report)
     _files(home, report)
     _dashboard(home, config, report)
     _proxy_trust(config, report)
@@ -50,6 +56,35 @@ def run_doctor(home: Path) -> int:
         report.fail(f"live checks could not run: {exc}")
     print(f"{report.failed} failed, {report.warned} warnings.")
     return 1 if report.failed else 0
+
+
+def _platform(report: Report) -> None:
+    report.ok(f"Python {sys.version_info.major}.{sys.version_info.minor} on {platform.system()} "
+              f"{platform.machine()}")
+    if shutil.which("tr4p") is None:
+        report.warn("the `tr4p` command is not on PATH; `python -m tr4p` always works. " + _path_hint())
+    root = getattr(os, "geteuid", lambda: 1)() == 0
+    if root:
+        report.warn("running as root; use an ordinary user (the Docker image and the service "
+                    "files in packaging/ already do)")
+    try:
+        import aiohttp.http_parser as parser
+        compiled = parser.HttpRequestParser is not parser.HttpRequestParserPy
+        report.ok("aiohttp is using its compiled speedups" if compiled
+                  else "aiohttp is using its pure-Python parser (works, a little slower)")
+    except Exception:
+        report.warn("could not tell whether aiohttp's compiled speedups are in use")
+
+
+def _path_hint() -> str:
+    scripts = Path(sysconfig.get_path("scripts", scheme=_user_scheme()))
+    if sys.platform == "win32":
+        return f'Add {scripts} to PATH (Settings > System > About > Advanced system settings > Environment Variables).'
+    return f'Add it with: export PATH="{scripts}:$PATH"  (put that line in ~/.profile or your shell rc file), or use pipx.'
+
+
+def _user_scheme() -> str:
+    return {"win32": "nt_user", "darwin": "osx_user"}.get(sys.platform, "posix_user")
 
 
 def _files(home: Path, report: Report) -> None:
