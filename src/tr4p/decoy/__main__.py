@@ -29,6 +29,9 @@ from tr4p.decoy.app import DecoyApp
 KEY_HEADER = "X-Decoy-Key"
 SESSION_HEADER = "X-Decoy-Session"
 TOUCH_HEADER = "X-Decoy-Touch"
+THEME_HEADER = "X-Decoy-Theme"
+CANNED_HEADER = "X-Decoy-Canned"      # an error the decoy chose to show, not a failure
+DELAY_HEADER = "X-Decoy-Delay"
 MAX_BODY = 64 * 1024
 
 
@@ -52,13 +55,18 @@ def build(settings: dict) -> web.Application:
             return web.json_response({"wiped": decoy.wipe(sid)})
         body = await request.content.read(MAX_BODY) if request.can_read_body else b""
         try:
-            reply = decoy.handle(request.method, path, request.query_string, body, sid)
+            reply = decoy.handle(request.method, path, request.query_string, body, sid,
+                                 request.headers.get(THEME_HEADER, "generic"))
         except Exception:
             return web.Response(status=500)
         headers = dict(reply.headers)
         headers["Content-Type"] = reply.content_type
         if reply.touch:
             headers[TOUCH_HEADER] = reply.touch.encode("ascii", "replace").decode("ascii")[:80]
+        if reply.canned:
+            headers[CANNED_HEADER] = "1"
+        if reply.delay:
+            headers[DELAY_HEADER] = f"{reply.delay:g}"
         return web.Response(status=reply.status, body=reply.body, headers=headers)
 
     app = web.Application(client_max_size=MAX_BODY)

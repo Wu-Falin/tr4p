@@ -95,6 +95,7 @@ class Maze:
         self._random = random.Random()
         loot.admin_path = self.admin_path
         self.discovery = Discovery(seed, canaries, honeytokens, persona)
+        loot.api_paths = lambda: canaries.current().api_paths
 
     # ------------------------------------------------------------------ entry
 
@@ -111,7 +112,8 @@ class Maze:
         return f"/{segment}/m/{self._random.getrandbits(32):08x}"
 
     def respond(self, method: str, path: str, query: str, body: bytes | None,
-                host: str, session_key: str, trapped: bool) -> Loot | None:
+                host: str, session_key: str, trapped: bool,
+                depth_bonus: int = 0) -> Loot | None:
         """Answer a request inside canary territory. None means "forbidden"."""
         segment, _, rest = path[1:].partition("/")
         current = self._canaries.current()
@@ -134,7 +136,7 @@ class Maze:
             return Loot(200, self._plain_type(),
                         self._burn_log(path, f"/{segment}/", size, session_key), True)
         depth = len([part for part in rest.split("/") if part])
-        return self._loot.render(path, host, allow_dirs=depth < self._config.maze.rabbit_depth,
+        return self._loot.render(path, host, allow_dirs=depth < self._config.maze.rabbit_depth + depth_bonus,
                                  session_key=session_key)
 
     # ------------------------------------------------------------ token burn
@@ -276,6 +278,9 @@ class Maze:
     def _stage(self, segment: str, base: str, stage: int, token: str,
                done: bool, following: str, needed: int, session_key: str = "") -> str:
         secret = _STAGE_SECRETS[stage % len(_STAGE_SECRETS)]
+        paths = self._canaries.current().api_paths
+        partial = ("<p>Access level: read-only. Elevated access needs the operator key listed at "
+                   f"<code>{escape(paths[stage % len(paths)])}</code>.</p>") if paths else ""
         label = secret.replace("_", " ")
         status = (f'<p>Job finished. <a href="{escape(following, quote=True)}">Continue to the next step</a>.</p>'
                   if done else
@@ -283,7 +288,7 @@ class Maze:
                   f'Poll <a href="{base}job/{stage}?t={token}">the job status</a> until it reports done.</p>')
         return (
             f"<p>Step {stage + 1} of {MAX_STAGE + 1}: {escape(_STAGES[stage].lower())}.</p>{status}"
-            f"<h2>Artifacts</h2><ul>"
+            f"{partial}<h2>Artifacts</h2><ul>"
             f"<li>{escape(label)}: <code>{escape(self._tokens.issue(secret, session_key or None))}</code></li>"
             f'<li><a href="/{segment}/logs/step-{stage}.log">step-{stage}.log</a></li></ul>'
             f'<p><a href="{base}sql?s={stage}&amp;t={token}">Query console</a></p>'
@@ -321,6 +326,33 @@ class Maze:
         )
 
     # ---------------------------------------------------------------- helpers
+
+    def friction(self, kind: str, accept: str, session_key: str) -> Loot:
+        """A canned firewall or rate-limit page. The rule number, the retry
+        time and the hint (an endpoint the index documents list) are fixed for
+        the session; only the reference changes from one answer to the next."""
+        paths = list(self._canaries.current().api_paths)
+        digest = self._seed.digest("friction-page", session_key)
+        hint = paths[digest[0] % len(paths)] if paths else "/api/v1/export"
+        if kind == "waf":
+            status, title = 403, "Request blocked"
+            rule = 10000 + int.from_bytes(digest[1:3], "big") % 900
+            text = (f"The request was blocked by the web application firewall (rule {rule}). "
+                    f"Reference {self._random.getrandbits(40):010x}. "
+                    f"Automated clients should use the documented API at {hint}.")
+            headers: dict[str, str] = {}
+        else:
+            status, title = 429, "Too many requests"
+            retry = 5 + digest[3] % 25
+            text = f"Too many requests. Retry in {retry} seconds. Bulk clients are exempt on {hint}."
+            headers = {"Retry-After": str(retry)}
+        if "json" in accept.lower() and "html" not in accept.lower():
+            return Loot(status, "application/json",
+                        json.dumps({"error": title.lower().replace(" ", "_"), "message": text}).encode("ascii"),
+                        headers=headers)
+        page = self._page(title, f"<p>{escape(text)}</p>")
+        page.status, page.headers = status, headers
+        return page
 
     def _page(self, title: str, content: str) -> Loot:
         name = escape(self._persona.site_name)

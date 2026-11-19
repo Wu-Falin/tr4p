@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from html import escape
@@ -30,6 +31,11 @@ from tr4p.site import BuiltinSite
 MAX_SESSIONS = 5000
 MAX_ROWS = 50
 PROFILES = ("generic", "php", "wordpress", "api")
+THEMES = ("generic", "database", "files", "portal")
+_FILES = ("users-export.csv", "db-dump.sql", "notes.txt")
+_SLEEP = re.compile(r"(?:sleep|pg_sleep|benchmark)\s*\(\s*(\d{1,2})|waitfor\s+delay\s+'0:0:(\d{1,2})'", re.IGNORECASE)
+_ORDER_BY = re.compile(r"order\s+by\s+(\d{1,3})", re.IGNORECASE)
+_UNION = re.compile(r"union\s+(?:all\s+)?select\s+([^;#]{1,300}?)(?:--|#|/\*|$)", re.IGNORECASE)
 HTML = "text/html; charset=utf-8"
 JSON = "application/json; charset=utf-8"
 
@@ -41,6 +47,8 @@ class Reply:
     body: bytes
     headers: dict[str, str] = field(default_factory=dict)
     touch: str = ""      # set when something marked sensitive was reached
+    canned: bool = False  # an error page the decoy chose to show (not a failure)
+    delay: float = 0.0    # seconds a "slow query" appears to take
 
 
 def _json(document: Any, status: int = 200, touch: str = "") -> Reply:
@@ -98,19 +106,100 @@ class DecoyApp:
 
     # ---------------------------------------------------------------- routing
 
-    def handle(self, method: str, path: str, query: str, body: bytes, sid: str) -> Reply:
+    def handle(self, method: str, path: str, query: str, body: bytes, sid: str,
+               theme: str = "generic") -> Reply:
         self.served += 1
         state = self._state(sid)
         params = {key: values[0] for key, values in parse_qs(query).items()}
-        route = getattr(self, f"_serve_{self.profile}")
-        reply = route(method, path, params, body, state)
+        text = " ".join(list(params.values()) + [body[:1000].decode("utf-8", "replace")])[:2000]
+        slow = _SLEEP.search(text)
+        reply = self._sql(text)
+        if reply is None and theme in THEMES and theme != "generic":
+            reply = self._themed(theme, method, path, params, state)
+        if reply is None:
+            reply = getattr(self, f"_serve_{self.profile}")(method, path, params, body, state)
         if reply is None:
             reply = self._not_found()
+        if slow:                       # a time-based probe sees the delay it asked for
+            reply.delay = float(min(int(next(g for g in slow.groups() if g)), 8))
         if reply.touch:
             self.touches += 1
         if self.profile in ("php", "wordpress"):
             reply.headers.setdefault("X-Powered-By", "PHP/8.2.18")
         return reply
+
+    def _sql(self, text: str) -> Reply | None:
+        """Canned database errors, and one partial win. The input is only
+        matched against a few fixed shapes; no query is parsed or run."""
+        if "'" not in text and '"' not in text:
+            return None
+        order = _ORDER_BY.search(text)
+        if order:
+            if int(order.group(1)) > 4:
+                return self._db_error(f"Unknown column '{order.group(1)}' in 'order clause'")
+            return None
+        union = _UNION.search(text)
+        if union:
+            if len(union.group(1).split(",")) != 4:
+                return self._db_error("The used SELECT statements have a different number of columns")
+            rows = "".join(f"<tr><td>{p.login}</td><td>{p.email}</td></tr>" for p in self._data.people[:5])
+            return Reply(200, HTML, self._page("Search results", f"<h1>Search results</h1><table>{rows}</table>"),
+                         touch="injected query result")
+        start = max(text.find("'"), 0) if "'" in text else text.find('"')
+        return self._db_error("You have an error in your SQL syntax; check the manual that corresponds to "
+                              f"your MySQL server version for the right syntax to use near '{text[start:start + 24]}' at line 1")
+
+    def _db_error(self, message: str) -> Reply:
+        page = self._page("Error", f"<h1>Database error</h1><pre>{escape(message)}</pre>")
+        return Reply(500, HTML, page, canned=True)
+
+    def _themed(self, theme: str, method: str, path: str, params: dict, state: dict) -> Reply | None:
+        """What the decoy adds for what the session seems to be after. The
+        data is the same as everywhere else; only the surfaces differ."""
+        route = path.rstrip("/").lower() or "/"
+        people, orders = self._data.people, self._data.orders
+        if theme == "database" and route in ("/db", "/adminer.php", "/phpmyadmin"):
+            sql = params.get("sql", "")[:300]
+            low, out = sql.lower(), ""
+            if sql:
+                if "show tables" in low:
+                    result = "users\norders\ninvoices\naudit_log"
+                elif re.search(r"from\s+users", low):
+                    result = "\n".join(f"{p.id} | {p.login} | {p.email}" for p in people[:5])
+                elif re.search(r"from\s+orders", low):
+                    result = "\n".join(f"{o.id} | {o.customer} | {o.amount} {o.currency}" for o in orders[:5])
+                else:
+                    result = "Query OK, 0 rows affected (0.00 sec)"
+                out = f"<pre>mysql&gt; {escape(sql)}\n{escape(result)}</pre>"
+            form = f'<form method="get"><input name="sql" size="60" value="{escape(sql, quote=True)}"> <button>Run</button></form>'
+            return Reply(200, HTML, self._page("Database console", f"<h1>Database console</h1>{form}{out}"),
+                         touch="database console")
+        if theme == "files" and route in ("/files", "/filemanager", "/backup"):
+            items = "".join(f'<li><a href="/files/download?name={n}">{n}</a></li>' for n in _FILES)
+            return Reply(200, HTML, self._page("Files", f"<h1>Files</h1><ul>{items}</ul>"), touch="file manager")
+        if theme == "files" and route == "/files/download":
+            name = params.get("name", "")
+            if name not in _FILES:           # only the three fixed names; never a path
+                return Reply(404, HTML, self._page("Not found", "<h1>File not found</h1>"))
+            if name == "users-export.csv":
+                lines = ["id,name,email,role"] + [f"{p.id},{p.name},{p.email},{p.role}" for p in people]
+                return Reply(200, "text/csv; charset=utf-8", ("\n".join(lines) + "\n").encode("utf-8"), touch="user export")
+            if name == "db-dump.sql":
+                rows = ",\n".join(f"({p.id},'{p.login}','{p.email}','{p.role}')" for p in people[:20])
+                return Reply(200, "text/plain; charset=utf-8", f"INSERT INTO users VALUES\n{rows};\n".encode("utf-8"),
+                             touch="database dump")
+            note = (f"admin / {self._tokens.get('admin_password', '')}\n"
+                    f"database password: {self._tokens.get('db_password', '')}\n")
+            return Reply(200, "text/plain; charset=utf-8", note.encode("utf-8"), touch="notes file")
+        if theme == "portal" and route in ("/portal", "/account", "/account/profile"):
+            if not state["signed_in"]:
+                return Reply(200, HTML, self._page("Account", '<h1>Account</h1><p><a href="/login">Sign in</a> to view your account.</p>'))
+            who = people[0]
+            mine = "".join(f"<li>#{o.id} {escape(o.product)} {o.amount} {o.currency} ({o.status})</li>"
+                           for o in orders[:5])
+            return Reply(200, HTML, self._page("Account", f"<h1>{escape(who.name)}</h1><p>{who.email}</p><ul>{mine}</ul>"),
+                         touch="customer profile")
+        return None
 
     def _not_found(self) -> Reply:
         if self.profile == "api":

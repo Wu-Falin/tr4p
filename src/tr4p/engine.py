@@ -115,6 +115,8 @@ class Verdict:
     delay: float = 0.0      # seconds to hold the answer back (0 = not trapped)
     blocked: bool = False   # on the enforced blocklist: refuse
     teleport: bool = False  # redirect this request into the maze
+    friction: str = ""      # "waf" or "rate": answer with a canned block page
+    payload: str = ""       # attack class found in this request, if any
 
 
 class Sink(Protocol):
@@ -135,6 +137,9 @@ class Counters:
     blocked: int = 0
     teleported: int = 0
     decoy_touches: int = 0
+    friction: int = 0
+    trap_bytes: int = 0
+    trap_seconds: float = 0.0
     by_type: dict[str, int] = field(default_factory=dict)
 
 
@@ -296,6 +301,7 @@ class Engine:
                 session.phase = token_phase
             self._plan_delay(session, info, verdict, now)
             self._plan_teleport(session, info, verdict)
+            self._plan_friction(session, info, verdict)
 
         if ident is None:
             mode = self._config.session.cookie_mode
@@ -391,6 +397,9 @@ class Engine:
                     payload = f"header:{name}"
                     break
         if payload is not None:
+            verdict.payload = payload
+            if not session.intent:
+                session.intent = payload.split(":")[0]
             signals.append(Signal("attack_payload", f"{payload} pattern in request"))
 
         if not session.agent_class:
@@ -642,6 +651,61 @@ class Engine:
             verdict.teleport = True
             self.counters.teleported += 1
 
+    def _plan_friction(self, session: Session, info: RequestInfo, verdict: Verdict) -> None:
+        """Now and then a high-tier session meets a canned firewall or
+        rate-limit page. Whether it does is fixed by the seed, the session and
+        the request count, so a replay behaves the same."""
+        if (
+            not self._config.maze.friction
+            or session.tier != scoring.TIER_HIGH
+            or session.released
+            or session.crawler == "verified"
+            or info.is_asset
+            or verdict.canary is not None
+            or verdict.bait is not None
+        ):
+            return
+        draw = int.from_bytes(self._seed.digest("friction", session.key, session.requests)[:2], "big")
+        if verdict.payload and draw % 3 == 0:
+            verdict.friction = "waf"
+        elif draw % 10 == 0:
+            verdict.friction = "rate"
+        if verdict.friction:
+            self.counters.friction += 1
+
+    def decoy_theme(self, session: Session) -> str:
+        """What the decoy presents to this session. Chosen the first time
+        and then kept, so the story stays the same."""
+        if session.theme:
+            return session.theme
+        if session.intent in ("sqli", "operator"):
+            theme = "database"
+        elif session.intent in ("traversal", "entity", "code", "command", "template",
+                                "lookup", "metadata"):
+            theme = "files"
+        elif session.intent == "xss" or "auth_burst" in session.signals:
+            theme = "portal"
+        else:
+            theme = "generic"
+        session.theme = theme
+        if theme != "generic":
+            self._emit("decoy", session, None, self._clock(),
+                       detail=f"decoy theme chosen from what the session tried: {theme}")
+        return theme
+
+    def account_bytes(self, session: Session | None, size: int) -> None:
+        """Trap content sent to a session (measured)."""
+        if session is not None and size > 0:
+            session.served_bytes += size
+            self.counters.trap_bytes += size
+
+    def account_hold(self, key: str, seconds: float) -> None:
+        """Time a session's answers were held back (measured)."""
+        session = self.sessions.get(key)
+        if session is not None and seconds > 0:
+            session.held_seconds += seconds
+            self.counters.trap_seconds += seconds
+
     def _is_trapped(self, session: Session) -> bool:
         return (
             session.tier in (scoring.TIER_MEDIUM, scoring.TIER_HIGH)
@@ -877,6 +941,9 @@ class Engine:
             "blocked": counters.blocked,
             "teleported": counters.teleported,
             "decoy_touches": counters.decoy_touches,
+            "friction": counters.friction,
+            "trap_bytes": counters.trap_bytes,
+            "trap_seconds": round(counters.trap_seconds, 1),
             "blocklist": len(self.blocklist),
             "by_type": dict(counters.by_type),
             "tracked_sessions": len(self.sessions),

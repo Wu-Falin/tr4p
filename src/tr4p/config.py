@@ -191,6 +191,8 @@ class MazeConfig:
     external_targets: list[str] = field(default_factory=list)
     # Vary request ids, ordering and formatting between answers.
     mutate: bool = True
+    # Canned firewall and rate-limit pages for high-tier sessions.
+    friction: bool = True
 
 
 @dataclass

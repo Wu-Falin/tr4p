@@ -36,6 +36,10 @@ class Session:
     tier: str = "none"
     released: bool = False
     campaign: str = ""          # shared by sessions linked through a reused secret
+    theme: str = ""             # what the decoy presents to this session, chosen once
+    intent: str = ""            # the first attack class seen (sqli, traversal, ...)
+    served_bytes: int = 0       # trap content sent to this session
+    held_seconds: float = 0.0   # time its answers were held back
     index_read: float = 0.0     # when a discovery document was last read
     inflight: int = 0           # page requests being answered right now
     last_page: float = 0.0      # steady-pace tracking (running mean and spread of gaps)
@@ -93,6 +97,9 @@ class Session:
             "tier": self.tier,
             "released": self.released,
             "campaign": self.campaign,
+            "theme": self.theme,
+            "served_bytes": self.served_bytes,
+            "held_seconds": round(self.held_seconds, 1),
             "crawler": self.crawler,
             "requests": self.requests,
         }
@@ -117,6 +124,9 @@ class Session:
             tier=str(data.get("tier", "none")),
             released=bool(data.get("released", False)),
             campaign=str(data.get("campaign", "")),
+            theme=str(data.get("theme", "")),
+            served_bytes=int(data.get("served_bytes", 0)),
+            held_seconds=float(data.get("held_seconds", 0.0)),
             crawler=str(data.get("crawler", "")),
             requests=int(data.get("requests", 0)),
         )

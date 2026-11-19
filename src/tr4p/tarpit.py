@@ -73,9 +73,11 @@ class Tarpit:
         config: TarpitConfig,
         bump: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        account: Callable[[str, float], None] | None = None,
     ) -> None:
         self._config = config
         self._bump = bump or (lambda key, reason: False)
+        self._account = account or (lambda key, seconds: None)
         self._clock = clock
         self._random = random.Random()
         # Oldest session first, so dropping "the oldest" is O(1).
@@ -234,6 +236,7 @@ class Tarpit:
         self.held -= 1
         self.buffered_bytes -= hold.buffered
         self.burned_seconds += self._clock() - hold.started
+        self._account(key, self._clock() - hold.started)
         gate = self._gates.get(key)
         if gate is None or hold not in gate.holds:
             return   # the session was dropped; nothing left to hand over

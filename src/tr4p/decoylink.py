@@ -31,7 +31,9 @@ import aiohttp
 from multidict import CIMultiDict
 
 from tr4p.config import Config
-from tr4p.decoy.__main__ import KEY_HEADER, SESSION_HEADER, TOUCH_HEADER
+from tr4p.decoy.__main__ import (
+    CANNED_HEADER, DELAY_HEADER, KEY_HEADER, SESSION_HEADER, THEME_HEADER, TOUCH_HEADER,
+)
 from tr4p.fsutil import ensure_private_dir, write_private
 from tr4p.honeytoken import Honeytokens
 from tr4p.persona import Persona
@@ -50,6 +52,13 @@ _FORWARD = ("user-agent", "accept", "accept-language", "content-type", "referer"
 _PASS_BACK = ("Location", "Content-Disposition", "X-Powered-By")
 
 
+def _seconds(value: str | None) -> float:
+    try:
+        return max(0.0, min(8.0, float(value or 0)))
+    except ValueError:
+        return 0.0
+
+
 class DecoyDown(Exception):
     """The decoy cannot answer. Callers must fail closed."""
 
@@ -62,6 +71,7 @@ class DecoyReply:
     headers: dict[str, str]
     cookies: list[str]
     touch: str
+    delay: float = 0.0
 
 
 class DecoyLink:
@@ -232,20 +242,22 @@ class DecoyLink:
             raise DecoyDown(str(exc)) from exc
 
     async def fetch(self, method: str, target: str, headers: Mapping[str, str],
-                    body: bytes | None, session_key: str) -> DecoyReply:
+                    body: bytes | None, session_key: str, theme: str = "generic") -> DecoyReply:
         """Ask the decoy for an answer. Raises DecoyDown on any failure."""
         forward = {name: headers[name] for name in _FORWARD if name in headers}
+        forward[THEME_HEADER] = theme
         try:
             response = await self._call(method, target, self.session_id(session_key), forward, body or b"")
             async with response:
                 data = await response.read()
-                if response.status >= 500:
+                if response.status >= 500 and CANNED_HEADER not in response.headers:
                     raise DecoyDown(f"decoy answered {response.status}")
                 touch = response.headers.get(TOUCH_HEADER, "")
                 reply = DecoyReply(
                     response.status, response.headers.get("Content-Type", "text/html"), data,
                     {name: response.headers[name] for name in _PASS_BACK if name in response.headers},
                     response.headers.getall("Set-Cookie", []), touch,
+                    _seconds(response.headers.get(DELAY_HEADER)),
                 )
         except DecoyDown:
             self.failures += 1
