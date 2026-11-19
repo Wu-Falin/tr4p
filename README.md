@@ -137,7 +137,9 @@ docker compose logs main
 
 The log shows the setup code. The public listener is on port 8080 and the
 dashboard on `http://127.0.0.1:8787`, reachable from that machine only. The
-decoy runs in its own container on an internal network with no way out. To
+decoy runs in its own container on an internal network with no route to the
+outside world; the only thing it shares that network with is the main
+service, whose dashboard refuses it. To
 protect an existing site:
 
 ```bash

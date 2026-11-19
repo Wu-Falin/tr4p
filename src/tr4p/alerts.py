@@ -64,11 +64,29 @@ def clean(value: object, limit: int = TEXT_LIMIT) -> str:
     return text[:limit].translate(_DEFUSE)
 
 
+_NAT64 = ipaddress.IPv6Network((0x0064FF9B << 96, 96))    # well-known NAT64 prefix (RFC 6052)
+
+
 def is_public_address(address: str) -> bool:
+    """True only for globally routable addresses, including when an IPv4
+    address is carried inside an IPv6 one (mapped, compatible, NAT64, 6to4,
+    Teredo): the embedded address must be public too."""
     try:
-        return ipaddress.ip_address(address.split("%")[0]).is_global
+        ip = ipaddress.ip_address(address.split("%")[0])
     except ValueError:
         return False
+    if not ip.is_global:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        value = int(ip)
+        if value >> 32 == 0:
+            return False                      # deprecated IPv4-compatible form, ::a.b.c.d
+        embedded = [ip.ipv4_mapped, ip.sixtofour, ip.teredo[1] if ip.teredo else None]
+        if ip in _NAT64:
+            embedded.append(ipaddress.IPv4Address(value & 0xFFFFFFFF))
+        if any(inner is not None and not inner.is_global for inner in embedded):
+            return False
+    return True
 
 
 def check_webhook_url(url: str, allow_private: bool) -> None:

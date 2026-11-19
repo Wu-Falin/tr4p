@@ -71,6 +71,7 @@ class Runtime:
             instance_id=seed.hex("instance-id", length=16),
             status=self.status,
             apply_settings=self.apply_settings,
+            refused_peers=lambda: self.decoy.peer_addresses if self.decoy is not None else frozenset(),
         )
         self._crawlers = CrawlerVerifier()
         self._tasks: set[asyncio.Task[Any]] = set()

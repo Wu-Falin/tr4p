@@ -305,6 +305,7 @@ class PublicApp:
             extra.add("Set-Cookie", value)
         extra.add("Set-Cookie", self._honey_cookie())
         extra.add("X-Robots-Tag", "noindex, nofollow")
+        extra["Cache-Control"] = "no-store"
         if reply.status in (301, 302, 303, 307, 308) and not content:
             content = self._persona.error_page(302)[1]
         return self._own(request, reply.status, reply.content_type, content,
@@ -656,11 +657,13 @@ class PublicApp:
         if not loot.index:
             extra.add("Set-Cookie", self._honey_cookie())
         extra.add("X-Robots-Tag", "noindex, nofollow")
+        # Bait carries secrets issued to one session; a shared cache in front
+        # must never hand them to anyone else.
+        extra["Cache-Control"] = "no-store"
         for name, value in loot.headers.items():
             extra[name] = value
         if loot.request_id:
             extra["X-Request-Id"] = loot.request_id
-            extra["Cache-Control"] = "no-store"
         return self._own(request, loot.status, loot.content_type, body, cookie, extra,
                          compress=len(body) <= _GZIP_MAX_OWN_BYTES)
 

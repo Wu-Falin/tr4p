@@ -17,6 +17,7 @@ with the Docker setup.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 import aiohttp
 from multidict import CIMultiDict
@@ -96,6 +98,7 @@ class DecoyLink:
         self._session: aiohttp.ClientSession | None = None
         self._watcher: asyncio.Task[None] | None = None
         self._stopping = False
+        self.peer_addresses: frozenset[str] = frozenset()
         self.restarts = 0
         self.served = 0
         self.failures = 0
@@ -122,7 +125,30 @@ class DecoyLink:
         write_private(path, json.dumps(settings).encode("utf-8"))
         return path
 
+    async def refresh_peers(self) -> None:
+        """Addresses the remote decoy service connects from, so the
+        dashboard can refuse them. Loopback is never listed: a decoy on the
+        same host cannot be told apart from the operator."""
+        host = urlsplit(self._remote).hostname if self._remote else None
+        if not host:
+            return
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+        except OSError:
+            return
+        found = set()
+        for info in infos:
+            address = str(info[4][0]).split("%")[0]
+            try:
+                if not ipaddress.ip_address(address).is_loopback:
+                    found.add(address)
+            except ValueError:
+                continue
+        if found:
+            self.peer_addresses = frozenset(found | self.peer_addresses)
+
     async def _check_remote(self) -> None:
+        await self.refresh_peers()
         try:
             response = await self._call("GET", "/__control/health", "", force=True)
             async with response:

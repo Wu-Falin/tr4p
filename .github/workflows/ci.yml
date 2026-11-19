@@ -34,10 +34,11 @@ jobs:
       matrix:
         python: ["3.10", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0   # the footprint audit reads the whole history
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
       - name: Install
@@ -58,8 +59,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
       - name: Install
@@ -73,7 +76,7 @@ jobs:
         run: python -m pytest -q tests/e2e
       - name: Screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dashboard-screenshots
           path: ${{ runner.temp }}/shots
@@ -89,7 +92,9 @@ jobs:
       matrix:
         image: ["debian:12", "ubuntu:22.04", "ubuntu:24.04", "fedora:41", "alpine:3.21"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Quickstart in ${{ matrix.image }}
         run: docker run --rm -v "$PWD:/src:ro" ${{ matrix.image }} sh /src/scripts/distro-check.sh
 
@@ -98,11 +103,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build and start
         run: |
           docker buildx build --platform linux/arm64 --load -t tr4p:arm64 .
@@ -115,8 +122,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - run: |
@@ -131,7 +140,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: System python3 explains itself
         run: |
           /usr/bin/python3 --version
@@ -165,8 +176,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Quickstart commands
@@ -182,7 +195,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Build and start
         run: docker compose up -d --build --wait
       - name: Smoke flow (canary -> trapped -> decoy)
@@ -193,6 +208,17 @@ jobs:
             echo "the decoy reached the outside world" && exit 1
           fi
           docker compose exec -T main python -c "import urllib.request as u; assert u.urlopen('http://decoy:8081/__control/ping', timeout=3).status == 204"
+      - name: Decoy cannot use the dashboard
+        run: |
+          docker compose exec -T decoy python -c "
+          import urllib.request as u, urllib.error as e
+          try:
+              u.urlopen('http://main:8787/api/v1/state', timeout=3)
+          except e.HTTPError as err:
+              assert err.code == 403, err.code
+          else:
+              raise SystemExit('the decoy reached the dashboard')
+          "
       - name: Containers are locked down
         run: |
           for name in main decoy; do
@@ -224,10 +250,11 @@ jobs:
           - os: macos-latest
             python: "3.13"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
       - name: Install

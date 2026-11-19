@@ -91,7 +91,10 @@ ids and formatting per answer, not facts.
 an empty directory, a seed derived for it alone and a random key; it never
 sees the install secret, the configuration or the upstream address. In the
 container setup it is a separate service on an internal network with no
-route out, reading one hand-over file from a read-only volume.
+route to the outside world, reading one hand-over file from a read-only
+volume. That network is shared with the main service only (the main service
+has to reach the decoy), so the decoy can open connections to it; the
+dashboard refuses every request coming from the decoy's addresses.
 
 **The dashboard is an attack surface.** Loopback by default, its own port,
 no default credentials, a console-only setup code, a Host allow-list against

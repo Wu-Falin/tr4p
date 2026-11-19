@@ -95,7 +95,10 @@ class Honeytokens:
         ident, tag = self._marker(spec, session_key)
         if session_key is not None:
             key = (name, ident)
-            self._origins[key] = session_key
+            previous = self._origins.get(key)
+            # Ids are short, so two sessions can share one. Then a returning
+            # secret cannot say which session it came from: link neither.
+            self._origins[key] = session_key if previous in (None, session_key) else ""
             self._origins.move_to_end(key)
             while len(self._origins) > MAX_ORIGINS:
                 self._origins.popitem(last=False)
@@ -130,5 +133,5 @@ class Honeytokens:
             if tag == "".join(spec.alphabet[b % len(spec.alphabet)] for b in expected[:TAG_CHARS]):
                 if (ident, tag) == self._marker(spec, None):
                     return Found(spec.name, fixed + tail, None, True)
-                return Found(spec.name, fixed + tail, self._origins.get((spec.name, ident)), False)
+                return Found(spec.name, fixed + tail, self._origins.get((spec.name, ident)) or None, False)
         return Found(spec.name, fixed + tail, None, False)

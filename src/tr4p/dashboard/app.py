@@ -106,6 +106,7 @@ class Dashboard:
         instance_id: str,
         status: Callable[[], dict[str, Any]],
         apply_settings: Callable[[dict[str, Any], str], Awaitable[None]] | None = None,
+        refused_peers: Callable[[], frozenset[str]] | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
@@ -116,6 +117,11 @@ class Dashboard:
         self._apply_settings = apply_settings
         self._sessions = SessionStore(config.dashboard.session_hours * 3600.0)
         self._limiter = LoginLimiter()
+        # One password check at a time: the limiter is consulted again inside,
+        # so parallel guesses cannot all slip past it, and only one costly
+        # hash runs at once.
+        self._verify_lock = asyncio.Lock()
+        self._refused_peers = refused_peers or (lambda: frozenset())
         self._streams = 0
         self._runner: web.AppRunner | None = None
         self.port = config.dashboard.port
@@ -187,6 +193,10 @@ class Dashboard:
     async def _guarded(self, request: web.Request, handler) -> web.StreamResponse:
         if not self._host_allowed(request):
             return web.Response(status=421, text="Unknown host")
+        if request.remote in self._refused_peers():
+            # The decoy container shares a network with this service; it
+            # must never be able to talk to the dashboard.
+            return web.Response(status=403, text="Forbidden")
         if request.method not in ("GET", "POST"):
             return web.Response(status=405, text="Method not allowed")
 
@@ -269,13 +279,17 @@ class Dashboard:
         })
 
     async def _api_setup(self, request: web.Request) -> web.StreamResponse:
+        data = await _read_json(request)
+        async with self._verify_lock:
+            return await self._setup_locked(request, data)
+
+    async def _setup_locked(self, request: web.Request, data: dict[str, Any]) -> web.StreamResponse:
         if not self.setup_required():
             return _json({"error": "setup is already complete"}, 409)
         address = request.remote or ""
         wait = self._limiter.retry_after(address)
         if wait > 0:
             return _too_many(wait)
-        data = await _read_json(request)
         code = str(data.get("code", "")).strip().upper()
         password = str(data.get("password", ""))
         expected = self.setup_code or ""
@@ -293,11 +307,15 @@ class Dashboard:
         return self._sign_in(request)
 
     async def _api_login(self, request: web.Request) -> web.StreamResponse:
+        data = await _read_json(request)
+        async with self._verify_lock:
+            return await self._login_locked(request, data)
+
+    async def _login_locked(self, request: web.Request, data: dict[str, Any]) -> web.StreamResponse:
         address = request.remote or ""
         wait = self._limiter.retry_after(address)
         if wait > 0:
             return _too_many(wait)
-        data = await _read_json(request)
         password = str(data.get("password", ""))
         stored = self._store.get_setting(PASSWORD_SETTING)
         valid = False
