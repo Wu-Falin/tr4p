@@ -201,6 +201,34 @@ def test_remote_decoy_settings_are_validated():
         Config.from_dict({"decoy": {"url": "ftp://decoy", "handoff_dir": "/handoff"}})
 
 
+# ---------------------------------------------------------------- smoke script
+
+def load_smoke():
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+
+    loader = SourceFileLoader("smoke_script", str(ROOT / "scripts" / "smoke"))
+    module = module_from_spec(spec_from_loader("smoke_script", loader))
+    loader.exec_module(module)
+    return module
+
+
+def test_smoke_tolerates_the_canned_block_pages_a_trapped_session_can_meet():
+    smoke = load_smoke()
+    pages = iter([(429, "<p>Too many requests. Retry in 9 seconds.</p>"),
+                  (403, "<p>The request was blocked by the web application firewall (rule 10042).</p>"),
+                  (200, '{"total": 3}')])
+    status, body, tries = smoke.use_key("http://x", "k", fetch=lambda *args: next(pages))
+    assert (status, body, tries) == (200, '{"total": 3}', 3)
+    # A 429 or 403 that is not one of the canned pages is a real failure, not retried.
+    status, _, tries = smoke.use_key("http://x", "k", fetch=lambda *args: (403, "denied"))
+    assert (status, tries) == (403, 1)
+    # Block pages forever: gives up after the attempt limit and reports the last one.
+    status, _, tries = smoke.use_key("http://x", "k", attempts=4,
+                                     fetch=lambda *args: (429, "Too many requests"))
+    assert (status, tries) == (429, 4)
+
+
 # ----------------------------------------------------------------------- docs
 
 QUICKSTART = ("pip install .", "tr4p init --yes --mode standalone", "tr4p doctor", "tr4p run")

@@ -28,6 +28,26 @@ def get(base: str, path: str, agent: str, key: str = "") -> tuple[int, str]:
         return error.code, error.read().decode("utf-8", "replace")
 
 
+BLOCK_MARKS = ("Too many requests", "blocked by the web application firewall")
+
+
+def use_key(base: str, key: str, fetch=get, attempts: int = 8) -> tuple[int, str, int]:
+    """Ask the decoy for its user list with the planted key.
+
+    A trapped session now and then meets a canned block page (a rate limit or
+    a firewall message) instead of the decoy: that is intended, not a failure.
+    The page is recognised by its text and the request is repeated. Returns
+    (status, body, number of tries)."""
+    status, body = 0, ""
+    for tries in range(1, attempts + 1):
+        status, body = fetch(base, "/api/users", "smoke-attacker", key)
+        if status in (403, 429) and any(mark in body for mark in BLOCK_MARKS):
+            print(f"   (canned block page, status {status}; trying again)")
+            continue
+        return status, body, tries
+    return status, body, attempts
+
+
 def main() -> int:
     base = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8080"
     for attempt in range(60):
@@ -54,8 +74,9 @@ def main() -> int:
     assert status == 200 and key
 
     started = time.time()
-    status, body = get(base, "/api/users", "smoke-attacker", key)
-    print(f"4. using the key: {status} after {time.time() - started:.1f}s (held by the tarpit)")
+    status, body, tries = use_key(base, key)
+    print(f"4. using the key: {status} after {time.time() - started:.1f}s and {tries} "
+          f"{'try' if tries == 1 else 'tries'} (held by the tarpit)")
     assert status == 200 and json.loads(body)["total"] > 0, "expected the decoy's fake user list"
 
     status, _ = get(base, "/api/users", "smoke-visitor")
