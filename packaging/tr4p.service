@@ -1,0 +1,23 @@
+# systemd user service. Install with:
+#   mkdir -p ~/.config/systemd/user && cp packaging/tr4p.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now tr4p
+#   loginctl enable-linger "$USER"      # keep it running after you log out
+# Change ExecStart if tr4p lives somewhere else (`command -v tr4p`).
+[Unit]
+Description=TR4P deception layer
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/tr4p run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/tr4p
+# Ports below 1024 need a reverse proxy or a capability; the defaults do not.
+
+[Install]
+WantedBy=default.target

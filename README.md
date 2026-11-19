@@ -107,7 +107,26 @@ To protect a real site, run `tr4p init` without `--yes` and answer the
 questions, or see the [guidebook](docs/GUIDE.md).
 
 Once the repository is public it can also be installed with
-`pipx install git+https://github.com/Wu-Falin/tr4p`.
+`pipx install git+https://github.com/Wu-Falin/tr4p`. If pip answers
+`externally-managed-environment`, use a virtual environment or pipx; if the
+`tr4p` command is not found, use `python -m tr4p` (`tr4p doctor` prints the
+PATH fix). [docs/INSTALL.md](docs/INSTALL.md) has the support matrix of what
+is tested in CI and what is best effort, service files for systemd, launchd
+and Windows, and upgrade and uninstall steps.
+
+### Supported platforms
+
+| Tested in CI | Best effort (should work, not run automatically) |
+| --- | --- |
+| Python 3.10 and 3.13 on Linux x86_64, full suite | Python 3.11, 3.12 and newer than 3.13 |
+| Windows Server runner, Python 3.10 and 3.13, full suite | Windows 10 and 11 desktop |
+| macOS Apple-silicon runner, Python 3.13, full suite | macOS on Intel; Homebrew Python |
+| Quickstart on Ubuntu, Windows and macOS | Other Linux distributions; Linux arm64 native, Raspberry Pi OS |
+| Debian 12, Ubuntu 22.04 and 24.04, Fedora 41, Alpine 3.21 (distro Python in a venv) | |
+| Docker image, linux/amd64 (full flow); linux/arm64 (built and started under emulation) | |
+
+Python 3.9 and older are refused with a plain message. This is not a promise
+that it works everywhere; see [docs/INSTALL.md](docs/INSTALL.md).
 
 ### With Docker
 
@@ -258,6 +277,8 @@ the live Slack, Discord, ntfy or mail services.
 
 ## Documentation
 
+- [Installing, upgrading, supported platforms](docs/INSTALL.md): what is
+  tested in CI and what is best effort, service files, uninstall.
 - [Defender guidebook](docs/GUIDE.md): deployment, TLS proxy setup, tuning,
   false positives, blocklist, alerts, backup, upgrade, privacy.
 - [Architecture](ARCHITECTURE.md): how the pieces fit and why.

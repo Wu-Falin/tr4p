@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd agent. Install with:
+       mkdir -p ~/Library/LaunchAgents && cp packaging/tr4p.plist ~/Library/LaunchAgents/local.tr4p.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.tr4p.plist
+     Remove with: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/local.tr4p.plist
+     Change the first ProgramArguments entry to the output of `command -v tr4p`. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.tr4p</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/tr4p</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/tr4p.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/tr4p.err.log</string>
+</dict>
+</plist>
