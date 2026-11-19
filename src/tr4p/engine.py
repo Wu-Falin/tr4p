@@ -36,6 +36,7 @@ from urllib.parse import parse_qsl, unquote_plus
 from tr4p import scoring
 from tr4p.blocklist import Blocklist
 from tr4p.canary import (
+    KIND_API,
     KIND_INSTRUCTION,
     KIND_ROBOTS,
     Canaries,
@@ -44,7 +45,7 @@ from tr4p.canary import (
 )
 from tr4p.clients import browser_header_anomaly, classify_agent, fingerprint
 from tr4p.config import Config
-from tr4p.honeytoken import Honeytokens
+from tr4p.honeytoken import Found, Honeytokens
 from tr4p.payloads import find_header_payload, find_payload
 from tr4p.seed import Seed
 from tr4p.session import GROUP_PREFIX, Session, SessionTable
@@ -62,7 +63,11 @@ _COOKIE_LENGTH = 31  # base64url of id + phase byte + tag, padding stripped
 MAX_PHASE = 40
 
 # Signals describing what a client *is*; raised at most once per session.
-_ONE_SHOT = frozenset({"scanner_ua", "generic_client", "header_anomaly", "no_assets"})
+_ONE_SHOT = frozenset({"scanner_ua", "generic_client", "header_anomaly", "no_assets",
+                       "cadence", "concurrency"})
+_PRIVILEGED = frozenset({"admin", "administrator", "root", "superuser", "staff", "manager",
+                         "owner", "1", "true", "yes"})
+INDEX_WINDOW = 6 * 3600.0   # how long reading an index document counts as context
 _HIDDEN_TYPES = frozenset({"canary_path", "robots_violation", "hidden_instruction"})
 
 # After this many events for one signal type in one session, only every
@@ -88,6 +93,7 @@ class RequestInfo:
     cookie: str | None = None      # value of our session cookie, if sent
     body: bytes | None = None      # small request bodies only
     is_asset: bool = False
+    honey_cookie: str | None = None   # value of the bait cookie, if sent
 
 
 @dataclass(slots=True)
@@ -150,6 +156,12 @@ class Engine:
             seed, config.canary.rotation_hours, config.canary.keep_rotations, clock
         )
         self.honeytokens = Honeytokens(seed)
+        rng = seed.rng("honey-cookie")
+        # A bait cookie only trap-served pages set. Sending it back changed to
+        # a privileged value is tampering that no ordinary visitor would try.
+        self.honey_cookie_name = (
+            f"{rng.choice(('role', 'access', 'user_type', 'is_staff'))}_{rng.getrandbits(12):03x}")
+        self.honey_cookie_value = rng.choice(("user", "guest", "0", "false"))
         self.whitelist = Whitelist(config.whitelist)
         self.blocklist = Blocklist(config.block, clock)
         self.sessions = SessionTable(
@@ -271,6 +283,7 @@ class Engine:
         session.user_agent = user_agent
         session.group_key = group_key
         session.requests += 1
+        session.inflight += 1
 
         verdict = Verdict(session=session)
         signals = self._inspect(info, session, verdict, now)
@@ -306,6 +319,8 @@ class Engine:
         det = self._det
         signals: list[Signal] = []
 
+        if status >= 400 and not info.is_asset:
+            session.err_path, session.err_query, session.err_at = info.path, info.query, now
         if verdict.bait == "if_missing" and status == 404:
             signals.append(Signal("probe_path", "scanner target that does not exist here"))
 
@@ -352,14 +367,15 @@ class Engine:
         signals: list[Signal] = []
         headers = info.headers
 
-        token = self._find_honeytoken(info)
-        if token is not None:
-            signals.append(Signal("honeytoken", f"planted secret used: {token}"))
+        found = self._find_honeytoken(info)
+        if found is not None:
+            signals.append(Signal("honeytoken", f"planted secret used: {found.name}"))
+            self._note_origin(session, found, info, now)
 
         hit = self.canaries.match(info.path)
         if hit is not None:
             verdict.canary = hit
-            signals.append(self._canary_signal(hit, info))
+            signals.append(self._canary_signal(hit, info, session, now))
         else:
             verdict.bait = bait_class(info.path)
             if verdict.bait == "always":
@@ -414,11 +430,61 @@ class Engine:
                     "auth_burst",
                     f"more than {det.auth_max} login attempts in {det.auth_window:g}s",
                 ))
+        if not info.is_asset:
+            self._cadence(session, now, signals)
+            if session.inflight >= det.concurrency_min and "concurrency" not in session.signals:
+                signals.append(Signal(
+                    "concurrency", f"{session.inflight} page requests in flight at once"))
+            if session.err_path == info.path and info.query != session.err_query \
+                    and now - session.err_at <= 10.0:
+                session.retries += 1
+                if session.retries == det.retry_min:
+                    signals.append(Signal(
+                        "retry_pattern",
+                        f"{session.retries} retries of {info.path[:60]} with changed "
+                        "parameters after an error"))
+            elif session.err_path != info.path:
+                session.retries = 0
+        cookie = info.honey_cookie
+        if cookie is not None and cookie.strip().lower() in _PRIVILEGED:
+            signals.append(Signal("tamper", "changed a bait cookie to a privileged value"))
         return signals
 
-    def _canary_signal(self, hit: CanaryHit, info: RequestInfo) -> Signal:
+    def _cadence(self, session: Session, now: float, signals: list[Signal]) -> None:
+        """Track the gaps between page requests (running mean and spread)
+        and note a pace too steady for a person."""
+        det = self._det
+        last, session.last_page = session.last_page, now
+        gap = now - last
+        if last <= 0 or gap <= 0 or gap >= 30.0:      # first request, or a pause
+            return
+        session.gap_n += 1
+        delta = gap - session.gap_mean
+        session.gap_mean += delta / session.gap_n
+        session.gap_m2 += delta * (gap - session.gap_mean)
+        if (session.gap_n >= det.cadence_min_gaps and session.gap_mean >= 0.05
+                and "cadence" not in session.signals):
+            spread = (session.gap_m2 / (session.gap_n - 1)) ** 0.5 / session.gap_mean
+            if spread < det.cadence_max_spread:
+                signals.append(Signal(
+                    "cadence",
+                    f"requests arrive at a steady pace (every {session.gap_mean:.2f}s, "
+                    f"spread {spread:.0%})"))
+
+    def _canary_signal(self, hit: CanaryHit, info: RequestInfo,
+                       session: Session | None = None, now: float = 0.0) -> Signal:
         age = self.canaries.rotation() - hit.rotation
         suffix = "" if age == 0 else f" (rotated out {age} rotation(s) ago)"
+        if hit.kind == KIND_API:
+            built = self.canaries.set_for(hit.rotation)
+            listed = built is not None and (info.path.rstrip("/") or "/") in built.api_paths
+            if not listed:
+                return Signal("enumeration",
+                              "requested an unlisted endpoint inside hidden API space" + suffix)
+            if session is not None and session.index_read and now - session.index_read < INDEX_WINDOW:
+                return Signal("follow_through",
+                              "used an endpoint listed in a discovery document it had read" + suffix)
+            return Signal("canary_path", "hidden API endpoint" + suffix)
         if hit.kind == KIND_INSTRUCTION:
             for _, value in parse_qsl(info.query, keep_blank_values=False):
                 if self.canaries.check_instruction_token(value):
@@ -431,7 +497,7 @@ class Engine:
             return Signal("robots_violation", "path listed only in robots.txt" + suffix)
         return Signal("canary_path", f"hidden {hit.kind} canary" + suffix)
 
-    def _find_honeytoken(self, info: RequestInfo) -> str | None:
+    def _find_honeytoken(self, info: RequestInfo) -> Found | None:
         haystacks: list[str] = []
         if info.query:
             haystacks.append(unquote_plus(info.query))
@@ -455,8 +521,35 @@ class Engine:
                 haystacks.append(unquote_plus(text))
         if not haystacks:
             return None
-        found = self.honeytokens.find(*haystacks)
-        return found.name if found else None
+        return self.honeytokens.find(*haystacks)
+
+    def _note_origin(self, session: Session, found: Found, info: RequestInfo, now: float) -> None:
+        """A secret issued to one session came back in another: the two are
+        one campaign, and the later one inherits the earlier one's evidence."""
+        if found.origin is None or found.origin == session.key:
+            return
+        origin = self.sessions.get(found.origin)
+        if origin is None:
+            return
+        campaign = origin.campaign or origin.key[:10]
+        if session.campaign == campaign:
+            return
+        origin.campaign = session.campaign = campaign
+        self._carry(origin, session, now)
+        self._emit("link", session, info, now,
+                   detail=f"same secret as session {origin.key[:8]}: one campaign ({campaign})")
+        self._sink.session(origin.snapshot())
+
+    def mark_index(self, session: Session | None) -> None:
+        """The session has read a discovery document."""
+        if session is not None:
+            session.index_read = self._clock()
+
+    def end(self, verdict: Verdict) -> None:
+        """The request is answered (or abandoned): it is no longer in flight."""
+        session = verdict.session
+        if session is not None and session.inflight > 0:
+            session.inflight -= 1
 
     # ------------------------------------------------------------------ scoring
 
@@ -573,7 +666,11 @@ class Engine:
         inherits the evidence of the trapped cookie-less group it comes
         from, at reduced weight."""
         group = self.sessions.get(group_key)
-        if group is None or group.released or not self._is_trapped(group):
+        if group is None:
+            return
+        # Reading a document before the first cookie arrived still counts.
+        session.index_read = max(session.index_read, group.index_read)
+        if group.released or not self._is_trapped(group):
             return
         self._expire(group, now)
         if self._is_trapped(group):

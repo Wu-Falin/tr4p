@@ -42,12 +42,27 @@ GROUPS: dict[str, str] = {
     "auth_burst": "volume",
     "no_assets": "fetch_pattern",
     "honeytoken": "honeytoken",
+    "cadence": "cadence",
+    "concurrency": "concurrency",
+    "retry_pattern": "retry",
+    "follow_through": "follow_through",
+    "enumeration": "enumeration",
+    "tamper": "tamper",
 }
 
 # Signals that mean "touched something only the trap advertises".
-CANARY_TYPES = frozenset(
-    {"canary_path", "robots_violation", "hidden_instruction", "probe_path", "honeytoken"}
-)
+CANARY_TYPES = frozenset({
+    "canary_path", "robots_violation", "hidden_instruction", "probe_path", "honeytoken",
+    "follow_through", "enumeration", "tamper",
+})
+
+# Evidence groups that need knowledge only the trap's own content provides,
+# or an attack in itself. Weak behavioural kinds (cadence, concurrency,
+# retry, client, volume, fetch pattern) are not on this list.
+STRONG_GROUPS = frozenset({
+    "payload", "probe", "honeytoken", "follow_through", "enumeration", "tamper",
+    "hidden_path", "instruction",
+})
 
 REPEAT_BONUS_STEP = 0.125
 REPEAT_BONUS_CAP = 4
@@ -111,7 +126,13 @@ def tier_for(
         # What qualifies a session for the high tier must be its own doing.
         own_groups = {GROUPS[name] for name in own if name in GROUPS}
         has_canary = bool(own & CANARY_TYPES)
-        enough_groups = high_min_groups >= 2 and len(own_groups) >= high_min_groups
+        # Weak behavioural kinds add to the score, but three kinds without a
+        # canary also need at least one strong kind among them.
+        enough_groups = (
+            high_min_groups >= 2
+            and len(own_groups) >= high_min_groups
+            and bool(own_groups & STRONG_GROUPS)
+        )
         if has_canary or enough_groups:
             return TIER_HIGH
     if score >= medium_threshold:

@@ -40,6 +40,12 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "no_assets": 15.0,
     "header_anomaly": 15.0,
     "generic_client": 10.0,
+    "cadence": 15.0,
+    "concurrency": 12.0,
+    "retry_pattern": 20.0,
+    "follow_through": 50.0,
+    "enumeration": 30.0,
+    "tamper": 40.0,
 }
 
 
@@ -104,6 +110,14 @@ class DetectionConfig:
     # header fingerprint with a trapped one counts for this fraction, and can
     # never lift the session above the medium tier by itself.
     inherited_weight: float = 0.7
+    # Steady pace: after this many gaps between page requests, a spread
+    # (standard deviation over mean) below the limit counts as machine-like.
+    cadence_min_gaps: int = 15
+    cadence_max_spread: float = 0.25
+    # Page requests of one session in flight at the same moment.
+    concurrency_min: int = 10
+    # Retries of one failing path with changed parameters, within 10 seconds.
+    retry_min: int = 5
 
 
 @dataclass
@@ -349,6 +363,10 @@ class Config:
         _require(self.session.inherited_ttl_minutes > 0,
                  "session.inherited_ttl_minutes must be positive")
         _require(0 <= det.inherited_weight <= 1, "detection.inherited_weight must be 0-1")
+        _require(det.cadence_min_gaps >= 8, "detection.cadence_min_gaps must be >= 8")
+        _require(0 < det.cadence_max_spread <= 1, "detection.cadence_max_spread must be 0-1")
+        _require(det.concurrency_min >= 4, "detection.concurrency_min must be >= 4")
+        _require(det.retry_min >= 3, "detection.retry_min must be >= 3")
         _require(public.max_connections >= 16, "public.max_connections must be >= 16")
         _require(public.idle_timeout >= 1, "public.idle_timeout must be >= 1")
         _require(public.body_timeout >= 1, "public.body_timeout must be >= 1")

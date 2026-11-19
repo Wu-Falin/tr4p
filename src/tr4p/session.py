@@ -35,6 +35,17 @@ class Session:
     score: float = 0.0
     tier: str = "none"
     released: bool = False
+    campaign: str = ""          # shared by sessions linked through a reused secret
+    index_read: float = 0.0     # when a discovery document was last read
+    inflight: int = 0           # page requests being answered right now
+    last_page: float = 0.0      # steady-pace tracking (running mean and spread of gaps)
+    gap_n: int = 0
+    gap_mean: float = 0.0
+    gap_m2: float = 0.0
+    err_path: str = ""          # retry tracking
+    err_query: str = ""
+    err_at: float = 0.0
+    retries: int = 0
     # Tarpit state: current phase, delayed requests so far, and the cached
     # head of the cookie hash chain for that phase.
     phase: int = 0
@@ -81,6 +92,7 @@ class Session:
             "score": self.score,
             "tier": self.tier,
             "released": self.released,
+            "campaign": self.campaign,
             "crawler": self.crawler,
             "requests": self.requests,
         }
@@ -104,6 +116,7 @@ class Session:
             score=float(data.get("score", 0.0)),
             tier=str(data.get("tier", "none")),
             released=bool(data.get("released", False)),
+            campaign=str(data.get("campaign", "")),
             crawler=str(data.get("crawler", "")),
             requests=int(data.get("requests", 0)),
         )

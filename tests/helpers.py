@@ -58,7 +58,12 @@ def make_seed(byte: int = 7) -> Seed:
 def make_engine(config: Config | None = None, seed: Seed | None = None):
     clock = Clock()
     sink = MemorySink()
-    engine = Engine(config or Config(), seed or make_seed(), sink, clock)
+    if config is None:
+        config = Config()
+        # These tests tick the clock in perfectly even steps; steady-pace
+        # detection has its own tests with realistic timing.
+        config.detection.cadence_min_gaps = 10 ** 9
+    engine = Engine(config, seed or make_seed(), sink, clock)
     return engine, sink, clock
 
 

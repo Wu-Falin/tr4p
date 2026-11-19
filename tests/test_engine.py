@@ -18,6 +18,7 @@ def visit(engine, path="/", status=200, content_type="text/html", **kwargs):
     info = request(path, **kwargs)
     verdict = engine.begin(info)
     engine.finish(info, verdict, status, content_type)
+    engine.end(verdict)
     return verdict
 
 
