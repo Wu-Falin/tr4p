@@ -137,8 +137,9 @@ class PublicApp:
     async def handle(self, request: web.BaseRequest) -> web.StreamResponse:
         protocol = request.protocol
         protocol.busy += 1
+        holder: list[Verdict] = []        # the verdict, so the request can be ended
         try:
-            return await self._handle(request)
+            return await self._handle(request, holder)
         except UpstreamError as exc:
             return self._error(request, exc.status)
         except (asyncio.CancelledError, ConnectionError):
@@ -148,8 +149,10 @@ class PublicApp:
             return self._error(request, 500)
         finally:
             protocol.busy -= 1
+            for verdict in holder:
+                self._engine.end(verdict)
 
-    async def _handle(self, request: web.BaseRequest) -> web.StreamResponse:
+    async def _handle(self, request: web.BaseRequest, holder: list) -> web.StreamResponse:
         headers = request.headers
         peer = _peer_address(request)
         trusted = self._is_trusted(peer)
@@ -183,10 +186,12 @@ class PublicApp:
             headers=headers,
             http_version=(request.version.major, request.version.minor),
             cookie=request.cookies.get(self._persona.cookie_name),
+            honey_cookie=request.cookies.get(self._engine.honey_cookie_name),
             body=body,
             is_asset=is_asset_request(path, headers),
         )
         verdict = self._engine.begin(info)
+        holder.append(verdict)
         if verdict.blocked:
             return self._error(request, 403)
         cookie = self._cookie_header(verdict, secure)
@@ -271,7 +276,7 @@ class PublicApp:
             self._engine.decoy_touch(session, info, reply.touch)
         if reply.status == 404:
             if verdict.bait:
-                loot = self._loot.render(info.path, request.host)
+                loot = self._bait_loot(request, info, verdict)
                 if loot is not None:
                     return self._loot_response(request, loot, cookie)
             return self._error(request, 404, cookie)
@@ -281,6 +286,7 @@ class PublicApp:
         extra: CIMultiDict[str] = CIMultiDict(reply.headers)
         for value in reply.cookies:
             extra.add("Set-Cookie", value)
+        extra.add("Set-Cookie", self._honey_cookie())
         if reply.status in (301, 302, 303, 307, 308) and not content:
             content = self._persona.error_page(302)[1]
         return self._own(request, reply.status, reply.content_type, content,
@@ -331,7 +337,7 @@ class PublicApp:
         if result is None:
             self._engine.finish(info, verdict, 404, "")
             if verdict.bait:
-                loot = self._loot.render(info.path, request.host)
+                loot = self._bait_loot(request, info, verdict)
                 if loot is not None:
                     return self._loot_response(request, loot, cookie)
             return self._error(request, 404, cookie)
@@ -361,7 +367,7 @@ class PublicApp:
         candidate = self._wants_injection(request, info, verdict)
         forward = self._upstream.request_headers(
             request.headers, client_ip, secure,
-            strip_cookie=self._persona.cookie_name, identity=candidate,
+            strip_cookie=(self._persona.cookie_name, self._engine.honey_cookie_name), identity=candidate,
         )
         if request.method == "GET" and request.headers.get("upgrade", "").lower() == "websocket":
             self._engine.finish(info, verdict, 101, "")
@@ -378,7 +384,7 @@ class PublicApp:
             self._engine.finish(info, verdict, status, content_type)
 
             if status == 404 and verdict.bait:
-                loot = self._loot.render(info.path, request.host)
+                loot = self._bait_loot(request, info, verdict)
                 if loot is not None:
                     upstream.close()
                     return self._loot_response(request, loot, cookie)
@@ -511,7 +517,7 @@ class PublicApp:
         disallow = self._engine.canaries.current().disallow
         forward = self._upstream.request_headers(
             request.headers, client_ip, secure,
-            strip_cookie=self._persona.cookie_name, identity=True,
+            strip_cookie=(self._persona.cookie_name, self._engine.honey_cookie_name), identity=True,
         )
         upstream = await self._upstream.fetch("GET", request.raw_path, forward)
         try:
@@ -586,22 +592,43 @@ class PublicApp:
 
     def _canary_loot(self, request, info: RequestInfo, verdict: Verdict) -> Loot | None:
         session = verdict.session
-        return self._maze.respond(
+        loot = self._maze.respond(
             request.method, info.path, info.query, info.body, request.host,
             session.key if session else "", verdict.delay > 0,
         )
+        if loot is not None and loot.index:
+            self._engine.mark_index(session)
+        return loot
+
+    def _bait_loot(self, request, info: RequestInfo, verdict: Verdict) -> Loot | None:
+        """Bait for a path the protected site does not have."""
+        key = verdict.session.key if verdict.session else ""
+        if verdict.bait == "index":
+            kind = self._maze.discovery.kind_for(info.path)
+            loot = (self._maze.discovery.document(kind, request.method, info.body, request.host, key)
+                    if kind else None)
+            if loot is not None:
+                self._engine.mark_index(verdict.session)
+            return loot
+        return self._loot.render(info.path, request.host, session_key=key)
+
+    def _honey_cookie(self) -> str:
+        return (f"{self._engine.honey_cookie_name}={self._engine.honey_cookie_value}; "
+                "Path=/; HttpOnly; SameSite=Lax")
 
     def _loot_response(self, request, loot: Loot | None, cookie: str | None) -> web.StreamResponse:
         if loot is None:
             return self._error(request, 403, cookie)
-        extra: dict[str, str] = {}
+        extra: CIMultiDict[str] = CIMultiDict()
         body = loot.body
         if loot.location:
             extra["Location"] = loot.location
             body = self._persona.error_page(302)[1]
         elif loot.static_file:
             stamp, etag = self._loot.file_headers(request.path, len(body))
-            extra = {"Last-Modified": stamp, "ETag": etag, "Accept-Ranges": "bytes"}
+            extra.update({"Last-Modified": stamp, "ETag": etag, "Accept-Ranges": "bytes"})
+        if not loot.index:
+            extra.add("Set-Cookie", self._honey_cookie())
         if loot.request_id:
             extra["X-Request-Id"] = loot.request_id
             extra["Cache-Control"] = "no-store"
@@ -631,10 +658,10 @@ class PublicApp:
         headers: CIMultiDict[str] = CIMultiDict()
         headers["Server"] = self._server_header()
         headers["Content-Type"] = content_type
+        if cookie:
+            headers.add("Set-Cookie", cookie)       # the session cookie comes first
         if extra:
             headers.extend(extra)
-        if cookie:
-            headers.add("Set-Cookie", cookie)
         if compress and _wants_gzip(request, headers, body, content_type):
             body = _gzip_bytes(body)
             _mark_gzipped(headers)

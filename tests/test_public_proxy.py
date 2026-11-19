@@ -195,7 +195,7 @@ class ProxyDetection(ListenerCase):
     async def test_bait_is_taken_over_only_when_the_site_has_nothing(self):
         response, body = await self.get("/.env")
         self.assertEqual(response.status, 200)
-        self.assertIn(self.engine.honeytokens.value("db_password").encode(), body)
+        self.assertIsNotNone(self.engine.honeytokens.find(body.decode()))   # planted secrets, issued to this session
         self.assertIn("/.env", self.hits)            # the site was asked first
         self.assertIn("ETag", response.headers)
         self.assert_anonymous(response, body)
@@ -224,8 +224,9 @@ class ProxyDetection(ListenerCase):
 
     async def test_honeytoken_from_bait_is_detected_when_used(self):
         _, body = await self.get("/.env")
-        secret = self.engine.honeytokens.value("api_key")
-        self.assertIn(secret.encode(), body)
+        secret = next(line.split("=", 1)[1] for line in body.decode().splitlines()
+                      if line.startswith("API_KEY="))
+        self.assertEqual(self.engine.honeytokens.find(secret).name, "api_key")
         await self.get("/api/data", headers=dict(BROWSER, Authorization=f"Bearer {secret}"))
         self.assertIn("honeytoken", self.signals())
         self.assertEqual(self.engine.stats()["tiers"]["high"], 1)

@@ -82,6 +82,9 @@ def fake_site(hits: list[str]) -> web.Application:
     async def robots(request):
         return web.Response(text="User-agent: *\nDisallow: /private/\n\nUser-agent: other\nDisallow: /\n")
 
+    async def real_llms(request):
+        return web.Response(text="the site's own llms file", content_type="text/plain")
+
     async def redirect(request):
         raise web.HTTPFound("/elsewhere")
 
@@ -119,6 +122,7 @@ def fake_site(hits: list[str]) -> web.Application:
     app.router.add_get("/wide", wide)
     app.router.add_route("*", "/echo", echo)
     app.router.add_get("/robots.txt", robots)
+    app.router.add_get("/llms.txt", real_llms)
     app.router.add_get("/redirect", redirect)
     app.router.add_get("/cookies", cookies)
     app.router.add_get("/wp-login.php", login_page)

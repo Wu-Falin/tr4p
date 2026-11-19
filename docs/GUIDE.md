@@ -114,12 +114,20 @@ Then in `config.json`:
 | `detection.weights` | config | weight of each signal type |
 | `tarpit.max_sessions` (2000) | dashboard, config | sessions held at once; oldest dropped beyond |
 | `canary.rotation_hours` (24) | config | how often canary paths change |
+| `detection.cadence_min_gaps` (15), `cadence_max_spread` (0.25) | config | how steady a pace must be to count |
+| `detection.concurrency_min` (10) | config | page requests in flight at once that count |
+| `detection.retry_min` (5) | config | retries with changed parameters that count |
 | `inject.enabled` | config | add hidden tripwires to your pages |
 | `decoy.enabled` | config | off keeps high-tier sessions on the real site, tarpit only |
 
 Start at level 3 with default thresholds and watch the dashboard for a week
 before changing anything. Raise the level if attackers are not slowed
 enough. Raise the thresholds if harmless clients are being flagged.
+
+The bait cookie (a name like `role_9f2`) is set only on pages the trap
+serves, never on your own pages, and is removed from requests before they
+reach your site. Run `python scripts/simulate` from a checkout to see how the
+scripted visitors fare under your settings.
 
 ## 4. False positives
 

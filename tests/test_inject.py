@@ -74,7 +74,7 @@ def test_snippet_contains_every_lure():
     text = snippet.decode("ascii")
     assert f"{current.instruction_path}?ref={token}" in text
     assert sum(path in text for path in current.link_paths) >= 2
-    assert any(path in text for path in current.comment_paths)
+    assert any(path in text for path in current.comment_paths + current.doc_paths)
     assert "<!--" in text
 
 

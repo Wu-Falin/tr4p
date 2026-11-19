@@ -40,6 +40,7 @@ class Loot:
     static_file: bool = False   # served with file-like headers
     location: str = ""          # set for redirects
     request_id: str = ""        # set when the answer was varied per request
+    index: bool = False         # a discovery document (reading it is context, not a signal)
 
 
 class LootFactory:
@@ -47,11 +48,18 @@ class LootFactory:
         self._seed = seed
         self._tokens = honeytokens
         self._persona = persona
+        self._session: str | None = None
         # Where bait files say the admin area is. Set by the maze.
         self.admin_path = lambda: ""
 
-    def render(self, path: str, host: str, allow_dirs: bool = True) -> Loot | None:
+    def _tok(self, name: str) -> str:
+        """The secret to show the session being served."""
+        return self._tokens.issue(name, self._session)
+
+    def render(self, path: str, host: str, allow_dirs: bool = True,
+               session_key: str = "") -> Loot | None:
         """Return bait for a path, or None to answer "forbidden"."""
+        self._session = session_key or None
         domain = host.split(":")[0] or "localhost"
         name = path.rsplit("/", 1)[-1]
         lowered = path.lower()
@@ -71,13 +79,13 @@ class LootFactory:
             return self._file(f"admin:$apr1${_pick(rng, 8)}${_pick(rng, 22)}\n")
         if lowered.endswith(".npmrc"):
             return self._file(
-                f"//registry.npmjs.org/:_authToken={self._tokens.value('deploy_token')}\n"
+                f"//registry.npmjs.org/:_authToken={self._tok('deploy_token')}\n"
             )
         if lowered.endswith("credentials"):
             return self._file(
                 "[default]\n"
-                f"aws_access_key_id = {self._tokens.value('cloud_access_key')}\n"
-                f"aws_secret_access_key = {self._tokens.value('cloud_secret_key')}\n"
+                f"aws_access_key_id = {self._tok('cloud_access_key')}\n"
+                f"aws_secret_access_key = {self._tok('cloud_secret_key')}\n"
             )
         if lowered.endswith(".sql"):
             return self._file(self._sql(domain, rng))
@@ -144,15 +152,15 @@ class LootFactory:
             "DB_PORT=3306\n"
             f"DB_DATABASE={slug}_prod\n"
             f"DB_USERNAME={slug}_app\n"
-            f"DB_PASSWORD={tokens.value('db_password')}\n\n"
+            f"DB_PASSWORD={self._tok('db_password')}\n\n"
             f"MAIL_HOST=smtp.{domain}\n"
             f"MAIL_USERNAME=noreply@{domain}\n"
-            f"MAIL_PASSWORD={tokens.value('smtp_password')}\n\n"
-            f"AWS_ACCESS_KEY_ID={tokens.value('cloud_access_key')}\n"
-            f"AWS_SECRET_ACCESS_KEY={tokens.value('cloud_secret_key')}\n"
+            f"MAIL_PASSWORD={self._tok('smtp_password')}\n\n"
+            f"AWS_ACCESS_KEY_ID={self._tok('cloud_access_key')}\n"
+            f"AWS_SECRET_ACCESS_KEY={self._tok('cloud_secret_key')}\n"
             "AWS_DEFAULT_REGION=eu-west-1\n\n"
-            f"JWT_SECRET={tokens.value('jwt_secret')}\n"
-            f"API_KEY={tokens.value('api_key')}\n"
+            f"JWT_SECRET={self._tok('jwt_secret')}\n"
+            f"API_KEY={self._tok('api_key')}\n"
             + (f"ADMIN_URL={self.admin_path()}\n" if self.admin_path() else "")
         )
 
@@ -160,7 +168,7 @@ class LootFactory:
         return (
             "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
             '[remote "origin"]\n'
-            f"\turl = https://deploy:{self._tokens.value('deploy_token')}@git.{domain}/"
+            f"\turl = https://deploy:{self._tok('deploy_token')}@git.{domain}/"
             f"{self._slug()}/web.git\n"
             "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
             '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n'
@@ -184,7 +192,7 @@ class LootFactory:
             "  PRIMARY KEY (`id`)\n"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n\n"
             "INSERT INTO `users` VALUES\n" + ",\n".join(rows) + ";\n\n"
-            f"-- service account: {self._slug()}_app / {self._tokens.value('db_password')}\n"
+            f"-- service account: {self._slug()}_app / {self._tok('db_password')}\n"
         )
 
     def _json(self, domain: str) -> str:
@@ -193,11 +201,11 @@ class LootFactory:
             "environment": "production",
             "database": {
                 "host": "127.0.0.1", "name": f"{self._slug()}_prod",
-                "user": f"{self._slug()}_app", "password": tokens.value("db_password"),
+                "user": f"{self._slug()}_app", "password": self._tok("db_password"),
             },
-            "api": {"baseUrl": f"https://api.{domain}/v2", "key": tokens.value("api_key")},
-            "admin": {"user": "admin", "password": tokens.value("admin_password")},
-            "jwtSecret": tokens.value("jwt_secret"),
+            "api": {"baseUrl": f"https://api.{domain}/v2", "key": self._tok("api_key")},
+            "admin": {"user": "admin", "password": self._tok("admin_password")},
+            "jwtSecret": self._tok("jwt_secret"),
         }, indent=2) + "\n"
 
     def _csv(self, domain: str, rng) -> str:
@@ -212,18 +220,18 @@ class LootFactory:
         return (
             "production:\n  adapter: mysql2\n  host: 127.0.0.1\n"
             f"  database: {slug}_prod\n  username: {slug}_app\n"
-            f"  password: {self._tokens.value('db_password')}\n"
-            f"  api_key: {self._tokens.value('api_key')}\n"
+            f"  password: {self._tok('db_password')}\n"
+            f"  api_key: {self._tok('api_key')}\n"
         )
 
     def _notes(self, domain: str, rng) -> str:
         login = self._people(domain, rng, 1)[0][0]
         return (
             "handover notes\n==============\n\n"
-            f"- admin login: admin / {self._tokens.value('admin_password')}"
+            f"- admin login: admin / {self._tok('admin_password')}"
             f"{' at ' + self.admin_path() if self.admin_path() else ''}\n"
-            f"- api key for the reporting job: {self._tokens.value('api_key')}\n"
-            f"- db user {self._slug()}_app, password {self._tokens.value('db_password')}\n"
+            f"- api key for the reporting job: {self._tok('api_key')}\n"
+            f"- db user {self._slug()}_app, password {self._tok('db_password')}\n"
             f"- ask {login} before touching the old export scripts\n"
             "- rotate everything after the migration (still not done)\n"
         )

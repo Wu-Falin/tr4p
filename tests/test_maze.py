@@ -55,9 +55,10 @@ def test_burn_page_is_deterministic_sized_and_capped():
 def test_burn_page_is_poisoned_and_uses_no_real_addresses():
     made, engine, _ = build(burn_bytes=131072)
     text = ask(made, f"/{segment(engine, 'comment')}/x/audit.log").body.decode()
-    assert engine.honeytokens.value("api_key") in text
+    found = engine.honeytokens.find(text)
+    assert found is not None and found.name == "api_key"
     assert made.admin_path() in text
-    addresses = set(re.findall(r"ip=(\S+)", text))
+    addresses = set(re.findall(r"ip=(\S+)", text.rsplit("\n", 1)[0]))   # the last line may be cut
     assert addresses and all(address.startswith("203.0.113.") for address in addresses)
 
 
@@ -197,7 +198,8 @@ def test_stage_pages_hand_out_poisoned_secrets():
     made, engine, _ = build()
     path, _, query = good_login(made, engine).partition("?")
     page = ask(made, path, query=query).body.decode()
-    assert engine.honeytokens.value("api_key") in page
+    found = engine.honeytokens.find(page)
+    assert found is not None and found.name == "api_key"
     assert "/logs/step-0.log" in page and "/admin/sql?" in page
 
 

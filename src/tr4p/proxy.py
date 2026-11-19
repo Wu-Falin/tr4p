@@ -74,7 +74,7 @@ class Upstream:
         headers: Mapping[str, str],
         client_ip: str,
         secure: bool,
-        strip_cookie: str = "",
+        strip_cookie: str | tuple[str, ...] = (),
         identity: bool = False,
     ) -> CIMultiDict[str]:
         """Headers to send upstream for a client request."""
@@ -213,10 +213,11 @@ def response_headers(headers: Mapping[str, str]) -> CIMultiDict[str]:
     return passed
 
 
-def _without_cookie(header: str, name: str) -> str:
-    """Remove one cookie from a Cookie header value."""
+def _without_cookie(header: str, names: str | tuple[str, ...]) -> str:
+    """Remove the named cookies from a Cookie header value."""
+    names = (names,) if isinstance(names, str) else tuple(names)
     kept = [
         part.strip() for part in header.split(";")
-        if part.strip() and part.strip().split("=", 1)[0] != name
+        if part.strip() and part.strip().split("=", 1)[0] not in names
     ]
     return "; ".join(kept)

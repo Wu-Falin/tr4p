@@ -181,6 +181,9 @@
     });
     row.appendChild(node("td")).appendChild(chips);
 
+    const campaign = node("td", "num", session.campaign ? session.campaign.slice(0, 8) : "-");
+    if (session.campaign) { campaign.title = "Linked to other sessions by a reused secret"; }
+    row.appendChild(campaign);
     row.appendChild(node("td", "client", session.user_agent || "(no user agent)"));
     row.appendChild(node("td", "num", ago(session.last_seen)));
 

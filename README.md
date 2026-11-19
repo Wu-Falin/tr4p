@@ -46,12 +46,25 @@ application. See [Limitations](#limitations).
 
    One signal never does more than log, however often it repeats. Sessions
    follow a signed cookie plus a header fingerprint, never an address alone.
+   Besides tripwires, payloads and volume, behaviour counts as evidence: a
+   steady pace between page requests, many page requests in flight at once,
+   retrying a failing path with changed parameters, acting on a discovery
+   document, and changing a bait cookie. Behavioural kinds are weak: they add
+   to the score but cannot, without a strong kind among them, make the high
+   tier. Secrets shown in bait are issued per session, so one that turns up in
+   another session links the two as one campaign.
 3. **Tarpit.** Answers are held back 1 s, 2 s, 4 s and so on up to a cap,
    sent as a slow drip so the client's own timeout never rescues it.
 4. **Cost layers.** Fake directory trees, long pages that burn an automated
    reader's time and context, a fake admin area where each step takes twice
    as long as the last, and secrets that are honeytokens: using one is itself
    a detection.
+   Automated clients like maps, so the trap also serves made-up discovery
+   documents (an agent-style index, an API description, a GraphQL schema, a
+   tool listing) that describe an "internal" API existing only as canned
+   text. Conventional names such as `/llms.txt` are served only when your own
+   site has no such file. **Reading a document is not a signal**; acting on
+   what it lists is.
 5. **Decoy.** High-tier sessions are answered by an emulated application
    with invented data, on the same address and port. If the decoy is down,
    they get an error page, never your real site.
@@ -181,6 +194,14 @@ Read these before relying on it.
 - **Look-alike visitors.** Someone sharing both address and exact browser
   fingerprint with a trapped cookie-less client can be slowed, or see one
   decoy page, before getting a session of their own.
+- **Behavioural kinds can misread scripts.** A monitoring script with a
+  steady pace looks machine-like. It still only reaches the low tier, because
+  one weak kind never does more than log. Check `python scripts/simulate`
+  after changing weights or thresholds: it replays scripted visitors,
+  including ordinary ones, and fails if any ends in the wrong tier.
+- **Per-session secrets are remembered in memory only.** After a restart a
+  returning secret is still recognised as planted but no longer traced to its
+  session. The decoy shows install-wide secrets, not per-session ones.
 - **False positives are possible.** A misbehaving but harmless crawler or
   browsing assistant can end up in the tarpit. Use the release button, the
   whitelist, and the thresholds.
@@ -200,6 +221,8 @@ Read these before relying on it.
 - Encryption of the seed file at rest. It is protected by file permissions
   only.
 - The text-only mischief pack (taunting fake rows and messages).
+- Log replay: measuring offline how many real visitors a configuration
+  would have flagged.
 - A dashboard for several instances. The API is ready for one; only the
   single-instance view exists.
 - TLS fingerprinting. TR4P sits behind your TLS proxy and never sees the
