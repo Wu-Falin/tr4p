@@ -155,6 +155,7 @@ def main() -> int:
         config.tarpit.base_delay = config.tarpit.max_delay = config.tarpit.light_max_delay = 60.0
         config.tarpit.max_sessions = max(args.held, 10)
         config.maze.redirect_chance = 0.0
+        config.maze.friction = False
         config.save(home / "config.json")
         seed = Seed.generate()
         seed.save(home / "secret.key")

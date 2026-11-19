@@ -150,6 +150,7 @@ class ListenerCase(unittest.IsolatedAsyncioTestCase):
         self.config.tarpit.enabled = False
         self.config.maze.redirect_chance = 0.0      # no random redirects unless a test asks
         self.config.decoy.enabled = False           # the decoy has its own tests
+        self.config.maze.friction = False           # canned block pages are tested on their own
         self.upstream_runner = None
         if self.mode == "proxy":
             self.upstream_runner = web.AppRunner(fake_site(self.hits), access_log=None)

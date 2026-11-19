@@ -147,6 +147,21 @@ away, and verified search engine crawlers are exempt. They can still happen.
   monitoring script requesting odd paths, a browsing assistant that follows
   hidden text. Whitelist the first two.
 
+### Incident reports
+
+Select a session in the dashboard and open its timeline: the playbook lists
+what it did, grouped by stage, and the two links export an incident report as
+Markdown or JSON. From the command line: `tr4p report SESSION_ID`.
+
+Treat attacker-supplied text as untrusted: reports remove control characters,
+shorten text and, for Markdown, escape it so a viewer that renders Markdown or
+HTML cannot be tricked. Held time and bytes sent are measured; tokens are an
+estimate (bytes divided by 4, input only, no price).
+
+**Reports contain client addresses**, which can be personal data. Share them
+only where needed, keep them no longer than needed, and remember that
+`tr4p purge` deletes the stored events a report is built from.
+
 ## 5. Blocklist export
 
 `blocklist.txt` in the home directory lists the addresses of clients

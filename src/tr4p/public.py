@@ -72,7 +72,7 @@ class PublicApp:
         self._seed = seed
         self._engine = engine
         self._persona = persona
-        self.tarpit = tarpit or Tarpit(config.tarpit, engine.bump)
+        self.tarpit = tarpit or Tarpit(config.tarpit, engine.bump, account=engine.account_hold)
         self.refused_connections = 0
         # Link to the decoy process (None when the decoy is switched off).
         self.decoy = decoy
@@ -121,6 +121,17 @@ class PublicApp:
 
     # ------------------------------------------------------------------ handler
 
+    def _account(self, holder: list, response) -> None:
+        """Count what the trap sent to a trapped session (measured bytes)."""
+        if not holder or holder[0].session is None or holder[0].delay <= 0:
+            return
+        size = 0
+        if isinstance(response, web.Response) and response.body:
+            size = len(response.body)
+        else:
+            size = response.content_length or 0
+        self._engine.account_bytes(holder[0].session, size)
+
     def _make_room(self) -> bool:
         """Called when the connection cap is hit: trapped connections are
         the ones we can afford to lose."""
@@ -139,7 +150,9 @@ class PublicApp:
         protocol.busy += 1
         holder: list[Verdict] = []        # the verdict, so the request can be ended
         try:
-            return await self._handle(request, holder)
+            response = await self._handle(request, holder)
+            self._account(holder, response)
+            return response
         except UpstreamError as exc:
             return self._error(request, exc.status)
         except (asyncio.CancelledError, ConnectionError):
@@ -219,6 +232,8 @@ class PublicApp:
         """Produce the answer. With held=True (a trapped session) small
         answers are returned unsent, so the tarpit can drip them out."""
         path = info.path
+        if verdict.friction:
+            return self._friction_response(request, info, verdict, cookie)
         if verdict.teleport:
             self._engine.finish(info, verdict, 302, "")
             return self._loot_response(
@@ -267,10 +282,12 @@ class PublicApp:
             if self.decoy is None:
                 raise DecoyDown("no decoy")
             reply = await self.decoy.fetch(request.method, request.raw_path, request.headers,
-                                           body, session.key)
+                                           body, session.key, theme=self._engine.decoy_theme(session))
         except DecoyDown:
             self._engine.finish(info, verdict, 503, "")
             return self._error(request, 503, cookie)
+        if reply.delay:
+            await asyncio.sleep(reply.delay)        # a "slow query" the attacker can time
         self._engine.finish(info, verdict, reply.status, reply.content_type)
         if reply.touch:
             self._engine.decoy_touch(session, info, reply.touch)
@@ -287,6 +304,7 @@ class PublicApp:
         for value in reply.cookies:
             extra.add("Set-Cookie", value)
         extra.add("Set-Cookie", self._honey_cookie())
+        extra.add("X-Robots-Tag", "noindex, nofollow")
         if reply.status in (301, 302, 303, 307, 308) and not content:
             content = self._persona.error_page(302)[1]
         return self._own(request, reply.status, reply.content_type, content,
@@ -592,13 +610,21 @@ class PublicApp:
 
     def _canary_loot(self, request, info: RequestInfo, verdict: Verdict) -> Loot | None:
         session = verdict.session
+        bonus = min(4, session.phase // 2) if session is not None and verdict.delay > 0 else 0
         loot = self._maze.respond(
             request.method, info.path, info.query, info.body, request.host,
-            session.key if session else "", verdict.delay > 0,
+            session.key if session else "", verdict.delay > 0, depth_bonus=bonus,
         )
         if loot is not None and loot.index:
             self._engine.mark_index(session)
         return loot
+
+    def _friction_response(self, request, info: RequestInfo, verdict: Verdict,
+                           cookie: str | None) -> web.StreamResponse:
+        key = verdict.session.key if verdict.session else ""
+        loot = self._maze.friction(verdict.friction, request.headers.get("accept", ""), key)
+        self._engine.finish(info, verdict, loot.status, loot.content_type)
+        return self._loot_response(request, loot, cookie)
 
     def _bait_loot(self, request, info: RequestInfo, verdict: Verdict) -> Loot | None:
         """Bait for a path the protected site does not have."""
@@ -629,6 +655,9 @@ class PublicApp:
             extra.update({"Last-Modified": stamp, "ETag": etag, "Accept-Ranges": "bytes"})
         if not loot.index:
             extra.add("Set-Cookie", self._honey_cookie())
+        extra.add("X-Robots-Tag", "noindex, nofollow")
+        for name, value in loot.headers.items():
+            extra[name] = value
         if loot.request_id:
             extra["X-Request-Id"] = loot.request_id
             extra["Cache-Control"] = "no-store"

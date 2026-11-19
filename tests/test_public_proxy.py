@@ -195,7 +195,10 @@ class ProxyDetection(ListenerCase):
     async def test_bait_is_taken_over_only_when_the_site_has_nothing(self):
         response, body = await self.get("/.env")
         self.assertEqual(response.status, 200)
-        self.assertIsNotNone(self.engine.honeytokens.find(body.decode()))   # planted secrets, issued to this session
+        password = next(line.split("=", 1)[1] for line in body.decode().splitlines()
+                        if line.startswith("DB_PASSWORD="))
+        found = self.engine.honeytokens.find(password)
+        self.assertEqual((found.name, found.install), ("db_password", False))   # issued to this session
         self.assertIn("/.env", self.hits)            # the site was asked first
         self.assertIn("ETag", response.headers)
         self.assert_anonymous(response, body)

@@ -102,6 +102,16 @@ attacker-supplied text rendered only as text.
 **Privacy by default.** Nothing about clean traffic is stored. Flagged
 sessions are kept for a set number of days and can be purged.
 
+## Themes, friction and reports
+
+The decoy theme is chosen once, from the first attack class a session tried,
+and kept on the session, so the story never changes. Friction (a canned block
+page) is drawn from the seed, the session key and the request count, so it is
+repeatable and needs no state; the rule number, retry time and hint are
+fixed per session and only the reference varies. Reports are built from a
+session snapshot and its events, with attacker text cleaned and escaped at the
+moment of building, not at display time.
+
 ## What is deliberately not here
 
 - No code that runs on, or is aimed at, a visitor's machine.

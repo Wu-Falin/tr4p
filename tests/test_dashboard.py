@@ -426,3 +426,23 @@ class Timeline(DashboardCase):
         self.assertEqual(response.status, 404)
         response, _ = await self.call("GET", "/api/v1/sessions/timeline")
         self.assertEqual(response.status, 404)
+
+
+class Report(DashboardCase):
+    async def test_incident_report_endpoints(self):
+        anonymous, _ = await self.call("GET", "/api/v1/sessions/report", params={"key": "x"})
+        self.assertEqual(anonymous.status, 401)
+        await self.login()
+        session = self.trap_someone()
+        response, data = await self.call("GET", "/api/v1/sessions/report", params={"key": session.key})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["session"]["id"], session.key)
+        self.assertEqual([s["stage"] for s in data["stages"]], ["Reconnaissance", "Automation traits"])
+        self.assertIn("estimate", " ".join(data["notes"]).lower())
+        markdown, text = await self.call("GET", "/api/v1/sessions/report",
+                                         params={"key": session.key, "format": "md"})
+        self.assertTrue(markdown.headers["Content-Type"].startswith("text/markdown"))
+        self.assertIn("attachment", markdown.headers["Content-Disposition"])
+        self.assertIn(b"Incident report", text)
+        missing, _ = await self.call("GET", "/api/v1/sessions/report", params={"key": "nobody"})
+        self.assertEqual(missing.status, 404)

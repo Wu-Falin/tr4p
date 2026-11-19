@@ -58,7 +58,11 @@ application. See [Limitations](#limitations).
 4. **Cost layers.** Fake directory trees, long pages that burn an automated
    reader's time and context, a fake admin area where each step takes twice
    as long as the last, and secrets that are honeytokens: using one is itself
-   a detection.
+   a detection. The bait library covers deployment, pipeline, state and
+   collection files, status and debug pages, and a made-up script bundle with
+   a source map; all of it is generated from your seed and invisible to
+   visitors, screen readers and search engines (robots.txt disallows it and
+   every bait response says `noindex, nofollow`).
    Automated clients like maps, so the trap also serves made-up discovery
    documents (an agent-style index, an API description, a GraphQL schema, a
    tool listing) that describe an "internal" API existing only as canned
@@ -67,7 +71,18 @@ application. See [Limitations](#limitations).
    what it lists is.
 5. **Decoy.** High-tier sessions are answered by an emulated application
    with invented data, on the same address and port. If the decoy is down,
-   they get an error page, never your real site.
+   they get an error page, never your real site. The decoy picks what to
+   show from what the session tried (a database console for injection, a
+   file manager for path traversal, a customer portal for logins), and keeps
+   the same facts throughout. It also shows canned database errors, a partial
+   win for a classic injection, and "slow queries" an attacker can time.
+6. **Friction.** Now and then a high-tier session meets a canned firewall or
+   rate-limit page with a hint that points at an emulated endpoint. Whether
+   it does is fixed by the install seed, the session and the request count.
+7. **Reports.** Any session can be exported as an incident report (Markdown
+   or JSON) with a playbook of what it did, in the dashboard or with
+   `tr4p report`. Attacker-supplied text is cleaned and escaped. Figures such
+   as held time and bytes sent are measured; the token count is an estimate.
 
 Everything served to attackers is text computed from the seed. Nothing they
 send is ever executed, evaluated, or passed to a database, shell or file
@@ -121,6 +136,7 @@ TR4P_MODE=proxy TR4P_UPSTREAM=http://your-app:3000 docker compose up -d
 | `tr4p canaries` | list the current canary paths |
 | `tr4p schema FILE` | give the decoy your table and column names (never data) |
 | `tr4p purge --days N` | delete stored events and sessions older than N days |
+| `tr4p report ID` | print an incident report for one session (`--format json` for JSON) |
 
 ## Tiring levels
 
@@ -143,9 +159,9 @@ Measured with `scripts/benchmark` inside a container limited to 1 CPU and
 | Measurement | Result |
 | --- | --- |
 | Memory when idle (service and decoy together) | 78 MB |
-| Memory with 2,000 trapped connections held at once | 121 MB |
+| Memory with 2,000 trapped connections held at once | 123 MB |
 | Ordinary visitor served during that flood | 2 ms |
-| Ordinary traffic, with the load generator sharing the same CPU | about 1,800 requests/s |
+| Ordinary traffic, with the load generator sharing the same CPU | about 2,200 requests/s |
 
 These are single measurements in a development container. Measure on your
 own server:
@@ -199,9 +215,17 @@ Read these before relying on it.
   one weak kind never does more than log. Check `python scripts/simulate`
   after changing weights or thresholds: it replays scripted visitors,
   including ordinary ones, and fails if any ends in the wrong tier.
-- **Per-session secrets are remembered in memory only.** After a restart a
-  returning secret is still recognised as planted but no longer traced to its
-  session. The decoy shows install-wide secrets, not per-session ones.
+- **Secret-to-session linking is memory-only.** After a restart a returning
+  secret is still recognised as planted, but the link to the session it was
+  issued to is lost. The decoy shows install-wide secrets, not per-session
+  ones.
+- **The new signal weights are tuned judgments**, not measurements. The
+  scripted-visitor scorecard (`python scripts/simulate`) guards them, and it
+  is only as good as the visitors it describes.
+- **Themes, block pages and canned errors are emulation.** A knowledgeable
+  attacker may notice that an error page is too convenient.
+- **The token figure is an estimate** (bytes sent divided by 4). Held time
+  and bytes are measured.
 - **False positives are possible.** A misbehaving but harmless crawler or
   browsing assistant can end up in the tarpit. Use the release button, the
   whitelist, and the thresholds.
