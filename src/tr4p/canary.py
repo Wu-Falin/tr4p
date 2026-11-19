@@ -26,7 +26,9 @@ KIND_COMMENT = "comment"          # mentioned in an HTML comment or data block
 KIND_ROBOTS = "robots"            # only ever listed in robots.txt
 KIND_INSTRUCTION = "instruction"  # hidden text addressed to automated agents
 
-KINDS = (KIND_LINK, KIND_COMMENT, KIND_ROBOTS, KIND_INSTRUCTION)
+KIND_API = "api"                  # a made-up API space described by discovery documents
+
+KINDS = (KIND_LINK, KIND_COMMENT, KIND_ROBOTS, KIND_INSTRUCTION, KIND_API)
 
 _DIR_WORDS = (
     "internal", "staging", "backup", "old", "private", "dev", "archive", "tmp",
@@ -39,6 +41,15 @@ _FILE_WORDS = (
     "accounts", "access-log", "passwords", "tokens", "orders", "members",
 )
 _FILE_ENDINGS = (".sql", ".bak", ".txt", ".json", ".csv", ".env", ".old", ".log", "/")
+_API_NAMES = ("users", "orders", "customers", "invoices", "keys", "tokens", "export", "accounts",
+              "reports", "audit", "sessions", "payments", "backups", "settings")
+# Discovery documents served inside the hidden comment directory.
+DOC_FILES = ("openapi.json", "swagger.json", "llms.txt", "tools.json", "sitemap.xml", "graphql")
+# Conventional names, served by the trap only when the protected site has none.
+INDEX_NAMES = frozenset({
+    "/llms.txt", "/openapi.json", "/swagger.json", "/v3/api-docs",
+    "/.well-known/tool-manifest.json", "/graphql",
+})
 _AGENT_WORDS = ("agent-check", "verify", "handshake", "session-init", "context", "preflight")
 
 # Scanner targets nothing legitimate ever requests: asking is the signal.
@@ -74,7 +85,7 @@ BAIT_IF_MISSING = frozenset({
     "/server-status", "/server-info", "/wp-login.php", "/xmlrpc.php",
     "/wp-admin/", "/administrator/", "/manager/html", "/jenkins/", "/solr/",
     "/console", "/console/", "/actuator", "/actuator/health", "/swagger-ui.html",
-    "/api-docs", "/v2/api-docs", "/graphql", "/cgi-bin/", "/webdav/",
+    "/api-docs", "/v2/api-docs", "/cgi-bin/", "/webdav/",
     "/owa/", "/remote/login", "/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php",
 })
 
@@ -95,6 +106,8 @@ class CanarySet:
     comment_paths: tuple[str, ...]
     robots_only_path: str
     instruction_path: str
+    api_paths: tuple[str, ...] = ()   # endpoints the discovery documents list
+    doc_paths: tuple[str, ...] = ()   # discovery documents in the comment directory
 
     @property
     def disallow(self) -> tuple[str, ...]:
@@ -120,6 +133,7 @@ class Canaries:
         self._rotation = -1
         self._current: CanarySet | None = None
         self._armed: dict[str, CanaryHit] = {}
+        self._sets: dict[int, CanarySet] = {}
 
     def rotation(self) -> int:
         return int(self._clock() // self._period)
@@ -128,6 +142,11 @@ class Canaries:
         self._refresh()
         assert self._current is not None
         return self._current
+
+    def set_for(self, rotation: int) -> CanarySet | None:
+        """The canary set of an armed rotation."""
+        self._refresh()
+        return self._sets.get(rotation)
 
     def match(self, path: str) -> CanaryHit | None:
         """Return the hit for a request path, or None. One dict lookup."""
@@ -173,6 +192,8 @@ class Canaries:
             comment_paths=comments,
             robots_only_path=robots_only,
             instruction_path=instruction,
+            api_paths=tuple(f"/{segments[KIND_API]}/v1/{name}" for name in rng.sample(_API_NAMES, 8)),
+            doc_paths=tuple(f"/{segments[KIND_COMMENT]}/{name}" for name in rng.sample(DOC_FILES, 2)),
         )
 
     def _refresh(self) -> None:
@@ -180,11 +201,14 @@ class Canaries:
         if rotation == self._rotation:
             return
         armed: dict[str, CanaryHit] = {}
+        sets: dict[int, CanarySet] = {}
         for past in range(rotation - self._keep + 1, rotation + 1):
-            for kind, segment in self.build(past).segments.items():
+            sets[past] = self.build(past)
+            for kind, segment in sets[past].segments.items():
                 armed[segment] = CanaryHit(kind=kind, rotation=past)
         self._armed = armed
-        self._current = self.build(rotation)
+        self._sets = sets
+        self._current = sets[rotation]
         self._rotation = rotation
 
 
@@ -194,6 +218,8 @@ def bait_class(path: str) -> str | None:
         return "always"
     if path in BAIT_IF_MISSING:
         return "if_missing"
+    if path in INDEX_NAMES:
+        return "index"
     return None
 
 

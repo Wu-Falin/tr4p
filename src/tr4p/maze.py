@@ -25,7 +25,8 @@ from html import escape
 from typing import Any, Callable
 from urllib.parse import parse_qs, parse_qsl
 
-from tr4p.canary import Canaries
+from tr4p.canary import KIND_API, KIND_COMMENT, Canaries
+from tr4p.discovery import Discovery
 from tr4p.config import Config
 from tr4p.honeytoken import Honeytokens
 from tr4p.loot import Loot, LootFactory
@@ -93,6 +94,7 @@ class Maze:
         self._clock = clock
         self._random = random.Random()
         loot.admin_path = self.admin_path
+        self.discovery = Discovery(seed, canaries, honeytokens, persona)
 
     # ------------------------------------------------------------------ entry
 
@@ -113,6 +115,14 @@ class Maze:
         """Answer a request inside canary territory. None means "forbidden"."""
         segment, _, rest = path[1:].partition("/")
         current = self._canaries.current()
+        hit = self._canaries.match(path)
+        if hit is not None and hit.kind == KIND_API:
+            return self._vary(self.discovery.endpoint(path, hit.rotation, session_key))
+        if hit is not None and hit.kind == KIND_COMMENT:
+            kind = self.discovery.kind_for(path)
+            document = self.discovery.document(kind, method, body, host, session_key) if kind else None
+            if document is not None:
+                return document
         if path == current.instruction_path:
             return self._vary(self._loot.agent_notice(current))
         if rest == "admin" or rest.startswith("admin/"):
@@ -121,16 +131,18 @@ class Maze:
             return self._node(segment, rest[2:].strip("/"), query, trapped)
         if path.lower().endswith(".log"):
             size = self._config.maze.burn_bytes if trapped else SMALL_PAGE
-            return Loot(200, self._plain_type(), self._burn_log(path, f"/{segment}/", size), True)
+            return Loot(200, self._plain_type(),
+                        self._burn_log(path, f"/{segment}/", size, session_key), True)
         depth = len([part for part in rest.split("/") if part])
-        return self._loot.render(path, host, allow_dirs=depth < self._config.maze.rabbit_depth)
+        return self._loot.render(path, host, allow_dirs=depth < self._config.maze.rabbit_depth,
+                                 session_key=session_key)
 
     # ------------------------------------------------------------ token burn
 
     def _plain_type(self) -> str:
         return "text/plain" if self._persona.family == "apache" else "application/octet-stream"
 
-    def _burn_log(self, path: str, directory: str, size: int) -> bytes:
+    def _burn_log(self, path: str, directory: str, size: int, session_key: str = "") -> bytes:
         """A long, plausible application log. Reading it costs time and
         context; the few "interesting" lines in it are poisoned."""
         size = max(256, min(size, HARD_PAGE_CAP))
@@ -141,7 +153,7 @@ class Maze:
         while total < size:
             stamp += rng.randrange(1, 90)
             if rng.randrange(70) == 0:
-                text = (f"DEBUG config: reloaded, api key {self._tokens.value('api_key')} "
+                text = (f"DEBUG config: reloaded, api key {self._tokens.issue('api_key', session_key or None)} "
                         f"admin console at {self.admin_path()}")
             else:
                 text = rng.choice(_LOG_LINES).format(
@@ -211,7 +223,8 @@ class Maze:
         text = body.decode("utf-8", "replace")
         fields = parse_qs(text, keep_blank_values=True)
         password = "".join(fields.get("password", [""]))
-        if password and password == self._tokens.value("admin_password"):
+        found = self._tokens.find(password) if password else None
+        if found is not None and found.name == "admin_password":
             return True
         return find_payload(text) == "sqli"
 
@@ -258,10 +271,10 @@ class Maze:
             return self._vary(Loot(200, "application/json",
                                    json.dumps(document, indent=2).encode("ascii")))
         return self._vary(self._page(_STAGES[stage], self._stage(
-            segment, base, stage, token, done, following, int(needed))))
+            segment, base, stage, token, done, following, int(needed), session_key)))
 
     def _stage(self, segment: str, base: str, stage: int, token: str,
-               done: bool, following: str, needed: int) -> str:
+               done: bool, following: str, needed: int, session_key: str = "") -> str:
         secret = _STAGE_SECRETS[stage % len(_STAGE_SECRETS)]
         label = secret.replace("_", " ")
         status = (f'<p>Job finished. <a href="{escape(following, quote=True)}">Continue to the next step</a>.</p>'
@@ -271,7 +284,7 @@ class Maze:
         return (
             f"<p>Step {stage + 1} of {MAX_STAGE + 1}: {escape(_STAGES[stage].lower())}.</p>{status}"
             f"<h2>Artifacts</h2><ul>"
-            f"<li>{escape(label)}: <code>{escape(self._tokens.value(secret))}</code></li>"
+            f"<li>{escape(label)}: <code>{escape(self._tokens.issue(secret, session_key or None))}</code></li>"
             f'<li><a href="/{segment}/logs/step-{stage}.log">step-{stage}.log</a></li></ul>'
             f'<p><a href="{base}sql?s={stage}&amp;t={token}">Query console</a></p>'
         )

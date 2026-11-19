@@ -80,7 +80,7 @@ def build_snippet(
         else:
             parts.append(f"<template><nav>{''.join(anchors)}</nav></template>")
 
-    comment_path = rng.choice(canaries.comment_paths)
+    comment_path = rng.choice(canaries.comment_paths + canaries.doc_paths)
     comment = rng.choice(_COMMENTS).format(path=comment_path, n=rng.randrange(100, 9999))
     parts.append(f"<!-- {comment.replace('--', '-')} -->")
 
