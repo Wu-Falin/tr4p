@@ -34,6 +34,8 @@ class DecoyPeerRefused(DashboardCase):
         for method, path in (("GET", "/login"), ("GET", "/api/v1/state"), ("POST", "/api/v1/login")):
             response, _ = await self.call(method, path, {"password": "x"} if method == "POST" else None, POST)
             self.assertEqual(response.status, 403, path)
+        response, _ = await self.call("GET", "/api/v1/state", headers={"Host": "elsewhere.example"})
+        self.assertEqual(response.status, 403)             # refused before anything else is checked
 
 
 class DecoyAddresses(unittest.IsolatedAsyncioTestCase):

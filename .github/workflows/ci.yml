@@ -213,7 +213,8 @@ jobs:
           docker compose exec -T decoy python -c "
           import urllib.request as u, urllib.error as e
           try:
-              u.urlopen('http://main:8787/api/v1/state', timeout=3)
+              # An allowed Host header, as an attacker inside the decoy would send.
+              u.urlopen(u.Request('http://main:8787/api/v1/state', headers={'Host': 'localhost'}), timeout=3)
           except e.HTTPError as err:
               assert err.code == 403, err.code
           else:

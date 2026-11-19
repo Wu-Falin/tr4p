@@ -191,12 +191,12 @@ class Dashboard:
         return response
 
     async def _guarded(self, request: web.Request, handler) -> web.StreamResponse:
-        if not self._host_allowed(request):
-            return web.Response(status=421, text="Unknown host")
         if request.remote in self._refused_peers():
             # The decoy container shares a network with this service; it
             # must never be able to talk to the dashboard.
             return web.Response(status=403, text="Forbidden")
+        if not self._host_allowed(request):
+            return web.Response(status=421, text="Unknown host")
         if request.method not in ("GET", "POST"):
             return web.Response(status=405, text="Method not allowed")
 
