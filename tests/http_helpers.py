@@ -137,6 +137,10 @@ class ListenerCase(unittest.IsolatedAsyncioTestCase):
     mode = "proxy"
     with_robots = True
 
+    def make_tarpit(self):
+        """Override to give the listener a tarpit with its own time."""
+        return None
+
     def configure(self, config: Config) -> None:
         """Override to adjust the config before start."""
 
@@ -164,7 +168,8 @@ class ListenerCase(unittest.IsolatedAsyncioTestCase):
         self.sink = MemorySink()
         self.engine = Engine(self.config, self.seed, self.sink)
         self.persona = Persona.from_seed(self.seed)
-        self.app = PublicApp(self.config, self.seed, self.engine, self.persona)
+        self.app = PublicApp(self.config, self.seed, self.engine, self.persona,
+                             tarpit=self.make_tarpit())
         await self.app.start()
         self.base = f"http://127.0.0.1:{self.app.port}"
         self.client = aiohttp.ClientSession(

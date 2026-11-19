@@ -74,7 +74,9 @@ class Tarpit:
         bump: Callable[[str, str], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         account: Callable[[str, float], None] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        self._sleep = sleep
         self._config = config
         self._bump = bump or (lambda key, reason: False)
         self._account = account or (lambda key, seconds: None)
@@ -124,7 +126,7 @@ class Tarpit:
         """
         hold = await self._enter(key, request)
         if hold is None:
-            await asyncio.sleep(min(delay, REFUSAL_PAUSE))
+            await self._sleep(min(delay, REFUSAL_PAUSE))
             return refuse()
         try:
             response = await self._held(request, hold, delay, produce)
@@ -149,10 +151,10 @@ class Tarpit:
             and self.buffered_bytes < config.buffer_total_bytes
         )
         if not drip:
-            await asyncio.sleep(delay)
+            await self._sleep(delay)
             return await produce(False)
 
-        await asyncio.sleep(min(config.drip_interval, delay * 0.4))
+        await self._sleep(min(config.drip_interval, delay * 0.4))
         response = await produce(True)
         remaining = delay - (self._clock() - hold.started)
         if response.prepared or remaining <= 0:
@@ -164,7 +166,7 @@ class Tarpit:
             or request.method == "HEAD"
             or response.status in _BODYLESS
         ):
-            await asyncio.sleep(remaining)
+            await self._sleep(remaining)
             return response
         hold.buffered = len(body)
         self.buffered_bytes += hold.buffered
@@ -177,7 +179,7 @@ class Tarpit:
         interval = self._config.drip_interval
         pieces = min(len(body), int(remaining / interval) + 1)
         if pieces <= 1:
-            await asyncio.sleep(remaining)
+            await self._sleep(remaining)
             return response
         gap = remaining / (pieces - 1)
         size = -(-len(body) // pieces)
@@ -189,7 +191,7 @@ class Tarpit:
         for index in range(pieces):
             chunk = body[index * size:(index + 1) * size]
             if index:
-                await asyncio.sleep(gap * self._random.uniform(0.9, 1.1))
+                await self._sleep(gap * self._random.uniform(0.9, 1.1))
             if chunk:
                 await stream.write(chunk)
         await stream.write_eof()
