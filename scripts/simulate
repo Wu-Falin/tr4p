@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Run the scripted visitors against the detection engine and print where
+each one ends up. Nothing is sent over a network.
+
+    python scripts/simulate
+
+Exit status is 1 when any visitor ends outside its expected tier.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tests.profiles import PROFILES, TIERS, run_profile  # noqa: E402
+
+
+def main() -> int:
+    bad = 0
+    print(f"{'visitor':28} {'expected':12} {'result':8} signals")
+    for profile in PROFILES:
+        tier, sink, engine = run_profile(profile)
+        wanted = profile.lowest if profile.lowest == profile.highest else f"{profile.lowest}-{profile.highest}"
+        fine = TIERS.index(profile.lowest) <= TIERS.index(tier) <= TIERS.index(profile.highest)
+        bad += not fine
+        counts = ", ".join(f"{name} x{n}" for name, n in sorted(engine.stats()["by_type"].items()))
+        print(f"{profile.name:28} {wanted:12} {tier:8} {counts or '-'}{'' if fine else '   <-- UNEXPECTED'}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
